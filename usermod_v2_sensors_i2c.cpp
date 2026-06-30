@@ -291,7 +291,7 @@ public:
     ver.add(F("v" SENSORS_I2C_VERSION));
 
     if (!enabled) {
-      ver.add(F("(disabled)"));
+      ver.add(F(" (disabled)"));
       return;
     }
 
@@ -325,15 +325,17 @@ public:
       else if (curLux < 0) j.add(F("-"));
       else { j.add(roundf(curLux * 10) / 10); j.add(F("lx")); }
     }
-    // Auto-brightness status
+    // Auto-brightness status: applied brightness (/255), the lux-mapped target,
+    // and the current manual offset. The second array element is always non-empty
+    // so WLED renders "value + suffix" (an empty suffix would stringify the whole
+    // array and show a stray trailing comma).
     if (autoBriEnabled && bhFound) {
       JsonArray j = user.createNestedArray(F("Sensor Auto-Brightness"));
       j.add(bri);
-      if (userBriOffset != 0) {
-        j.add(String(F(" (offset ")) + (userBriOffset > 0 ? "+" : "") + userBriOffset + F(")"));
-      } else {
-        j.add(F(""));
-      }
+      String suffix = F(" / 255");
+      if (lastTargetNoOffset >= 0) suffix += String(F(", target ")) + lastTargetNoOffset;
+      suffix += String(F(", offset ")) + (userBriOffset > 0 ? "+" : "") + userBriOffset;
+      j.add(suffix);
     }
   }
 
