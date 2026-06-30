@@ -357,14 +357,15 @@ public:
     // unit / help hints
     oappend(F("addInfo('Sensors I2C:Sensors:Read Interval',1,'sec');"));
     oappend(F("addInfo('Sensors I2C:Sensors:Decimals',1,'(0-3)');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Smoothing',1,'% (0=off, higher=smoother)');"));
+    oappend(F("addInfo('Sensors I2C:Auto Brightness:Smoothing',1,'% (0=off)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Update Interval',1,'sec');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Reset Offset',1,'apply once to clear manual offset');"));
+    oappend(F("addInfo('Sensors I2C:Auto Brightness:Reset Offset',1,'clears manual offset');"));
 
     // Arrange the four Lux/Brightness fields into a 2x2 mapping table
-    // (rows Min/Max x columns Lux|Brightness). Moves the existing input nodes
-    // so their name/value are preserved; guarded so it no-ops if the settings
-    // DOM ever changes (falls back to WLED's default field rendering).
+    // (rows Min/Max x columns Lux|Brightness), styled to match WLED's settings
+    // (centered, borderless with a header underline, WLED 's' number inputs).
+    // Moves the existing input nodes so their name/value are preserved; guarded
+    // so it no-ops if the settings DOM ever changes.
     oappend(F("(function(){try{var P='Sensors I2C:Auto Brightness:';"));
     oappend(F("function vis(n){var a=d.getElementsByName(P+n);return a.length?a[a.length-1]:null;}"));
     oappend(F("function hid(e){var p=e.previousSibling;while(p&&p.nodeType!=1)p=p.previousSibling;return(p&&p.tagName=='INPUT'&&p.type=='hidden')?p:null;}"));
@@ -373,30 +374,31 @@ public:
     oappend(F("F.forEach(function(n){E[n]=vis(n);if(!E[n])ok=0;});if(!ok)return;"));
     oappend(F("var pa=E['Lux Min'].parentNode;F.forEach(function(n){strip(E[n]);});"));
     oappend(F("var ref=hid(E['Lux Min'])||E['Lux Min'];"));
-    oappend(F("function C(t,x){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='2px 8px';c.style.border='1px solid rgba(128,128,128,.35)';c.style.textAlign='center';return c;}"));
-    oappend(F("var T=d.createElement('table');T.style.borderCollapse='collapse';T.style.margin='3px 0 6px 0';"));
-    oappend(F("var h=d.createElement('tr');h.appendChild(C('th',''));h.appendChild(C('th','Lux (lx)'));h.appendChild(C('th','Brightness (0-255)'));T.appendChild(h);"));
-    oappend(F("var r1=d.createElement('tr'),a1=C('td'),b1=C('td');r1.appendChild(C('td','Min'));r1.appendChild(a1);r1.appendChild(b1);T.appendChild(r1);"));
-    oappend(F("var r2=d.createElement('tr'),a2=C('td'),b2=C('td');r2.appendChild(C('td','Max'));r2.appendChild(a2);r2.appendChild(b2);T.appendChild(r2);"));
+    oappend(F("function C(t,x,hd){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='1px 7px';c.style.textAlign='center';if(hd)c.style.borderBottom='1px solid #666';return c;}"));
+    oappend(F("var T=d.createElement('table');T.style.borderCollapse='collapse';T.style.margin='4px auto 6px';"));
+    oappend(F("var h=d.createElement('tr');h.appendChild(C('th','',1));h.appendChild(C('th','Lux (lx)',1));h.appendChild(C('th','Brightness',1));T.appendChild(h);"));
+    oappend(F("var r1=d.createElement('tr'),a1=C('td'),b1=C('td');r1.appendChild(C('th','Min'));r1.appendChild(a1);r1.appendChild(b1);T.appendChild(r1);"));
+    oappend(F("var r2=d.createElement('tr'),a2=C('td'),b2=C('td');r2.appendChild(C('th','Max'));r2.appendChild(a2);r2.appendChild(b2);T.appendChild(r2);"));
     oappend(F("pa.insertBefore(T,ref);"));
-    oappend(F("function mv(n,c){var e=E[n],g=hid(e);e.className='';e.style.setProperty('width','6em','important');if(g)c.appendChild(g);c.appendChild(e);}"));
+    oappend(F("function mv(n,c){var e=E[n],g=hid(e);e.className='s';if(g)c.appendChild(g);c.appendChild(e);}"));
     oappend(F("mv('Lux Min',a1);mv('Brightness Min',b1);mv('Lux Max',a2);mv('Brightness Max',b2);"));
     oappend(F("}catch(e){}})();"));
 
-    // Live readings panel at the top of the section: a table populated from
-    // /json/info (the "Sensor ..." entries) plus a Refresh button. Guarded so it
-    // no-ops if anything is missing.
+    // "Readings" subsection (matches the Sensors/Auto Brightness sub-headers): a
+    // live table populated from /json/info plus a WLED-styled Refresh button.
     oappend(F("(function(){try{if(d.getElementById('si2cRd'))return;"));
     oappend(F("var en=d.getElementsByName('Sensors I2C:Enabled');if(!en.length)return;"));
     oappend(F("var sec=en[en.length-1];while(sec&&!(sec.nodeType==1&&sec.tagName=='DIV'&&sec.className=='sec'))sec=sec.parentNode;if(!sec)return;"));
-    oappend(F("var box=d.createElement('div');box.style.margin='4px 0 8px 0';"));
-    oappend(F("var T=d.createElement('table');T.id='si2cRd';T.style.borderCollapse='collapse';box.appendChild(T);box.appendChild(d.createElement('br'));"));
-    oappend(F("var btn=d.createElement('button');btn.type='button';btn.textContent='\\u21bb Refresh readings';btn.style.marginTop='4px';box.appendChild(btn);"));
-    oappend(F("function C(t,x,r){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='2px 10px';c.style.border='1px solid rgba(128,128,128,.35)';if(r)c.style.textAlign='right';return c;}"));
-    oappend(F("function row(k,v){var tr=d.createElement('tr');tr.appendChild(C('td',k));tr.appendChild(C('td',v,1));T.appendChild(tr);}"));
-    oappend(F("function refresh(){T.innerHTML='';row('Reading','Value');fetch('/json/info').then(function(r){return r.json();}).then(function(j){var u=(j&&j.u)||{},any=0;Object.keys(u).forEach(function(k){if(k.indexOf('Sensor ')!==0)return;any=1;var v=u[k];row(k.replace(/^Sensor /,''),Array.isArray(v)?v.filter(function(x){return x!==''&&x!=null;}).join(' '):(''+v));});if(!any)row('(no readings)','');}).catch(function(){row('(fetch failed)','');});}"));
-    oappend(F("btn.addEventListener('click',refresh);"));
-    oappend(F("var h3=sec.querySelector('h3');if(h3&&h3.nextSibling)sec.insertBefore(box,h3.nextSibling);else sec.appendChild(box);"));
+    oappend(F("function C(t,x,r,hd){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='1px 10px';c.style.textAlign=r?'right':'left';if(hd){c.style.textAlign='center';c.style.borderBottom='1px solid #666';}return c;}"));
+    oappend(F("var T=d.createElement('table');T.id='si2cRd';T.style.borderCollapse='collapse';T.style.margin='4px auto';T.style.minWidth='250px';"));
+    oappend(F("function row(k,v,hd){var tr=d.createElement('tr');tr.appendChild(C(hd?'th':'td',k,0,hd));tr.appendChild(C(hd?'th':'td',v,1,hd));T.appendChild(tr);}"));
+    oappend(F("function refresh(){T.innerHTML='';row('Reading','Value',1);fetch('/json/info').then(function(r){return r.json();}).then(function(j){var u=(j&&j.u)||{},any=0;Object.keys(u).forEach(function(k){if(k.indexOf('Sensor ')!==0)return;any=1;var v=u[k];row(k.replace(/^Sensor /,''),Array.isArray(v)?v.filter(function(x){return x!==''&&x!=null;}).join(' '):(''+v));});if(!any)row('(no readings)','');}).catch(function(){row('(fetch failed)','');});}"));
+    oappend(F("var hr=d.createElement('hr');hr.className='sml';"));
+    oappend(F("var p=d.createElement('p'),u2=d.createElement('u');u2.textContent='Readings';p.appendChild(u2);"));
+    oappend(F("var btn=d.createElement('button');btn.type='button';btn.className='btn sml';btn.textContent='\\u21bb Refresh';btn.addEventListener('click',refresh);"));
+    oappend(F("var bw=d.createElement('div');bw.appendChild(btn);"));
+    oappend(F("var an=sec.querySelector('hr.sml');function ins(n){if(an)sec.insertBefore(n,an);else sec.appendChild(n);}"));
+    oappend(F("ins(hr);ins(p);ins(T);ins(bw);"));
     oappend(F("refresh();}catch(e){}})();"));
   }
 
