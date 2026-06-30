@@ -290,37 +290,39 @@ public:
       return;
     }
 
+    // Each reading is prefixed with "Sensor " so the entries group together on the
+    // Info page and can be picked out by the live readings table on the settings page.
     // Temperature (HTU21D preferred, BMP180 fallback)
     {
-      JsonArray j = user.createNestedArray(F("Temperature"));
+      JsonArray j = user.createNestedArray(F("Sensor Temperature"));
       if (!htuFound && !bmpFound) j.add(F("Not Found"));
       else if (isnan(curTempC)) j.add(F("-"));
       else { j.add(roundDec(toDisplayTemp(curTempC))); j.add(tempUnitStr()); }
     }
     // Humidity (HTU21D)
     {
-      JsonArray j = user.createNestedArray(F("Humidity"));
+      JsonArray j = user.createNestedArray(F("Sensor Humidity"));
       if (!htuFound) j.add(F("Not Found"));
       else if (isnan(curHum)) j.add(F("-"));
       else { j.add(roundDec(curHum)); j.add(F("%")); }
     }
     // Pressure (BMP180)
     {
-      JsonArray j = user.createNestedArray(F("Pressure"));
+      JsonArray j = user.createNestedArray(F("Sensor Pressure"));
       if (!bmpFound) j.add(F("Not Found"));
       else if (isnan(curPressure)) j.add(F("-"));
       else { j.add(roundDec(curPressure)); j.add(F("hPa")); }
     }
     // Illuminance (BH1750)
     {
-      JsonArray j = user.createNestedArray(F("Illuminance"));
+      JsonArray j = user.createNestedArray(F("Sensor Illuminance"));
       if (!bhFound) j.add(F("Not Found"));
       else if (curLux < 0) j.add(F("-"));
       else { j.add(roundf(curLux * 10) / 10); j.add(F("lx")); }
     }
     // Auto-brightness status
     if (autoBriEnabled && bhFound) {
-      JsonArray j = user.createNestedArray(F("Auto-Brightness"));
+      JsonArray j = user.createNestedArray(F("Sensor Auto-Brightness"));
       j.add(bri);
       if (userBriOffset != 0) {
         j.add(String(F(" (offset ")) + (userBriOffset > 0 ? "+" : "") + userBriOffset + F(")"));
@@ -380,6 +382,22 @@ public:
     oappend(F("function mv(n,c){var e=E[n],g=hid(e);e.className='';e.style.setProperty('width','6em','important');if(g)c.appendChild(g);c.appendChild(e);}"));
     oappend(F("mv('Lux Min',a1);mv('Brightness Min',b1);mv('Lux Max',a2);mv('Brightness Max',b2);"));
     oappend(F("}catch(e){}})();"));
+
+    // Live readings panel at the top of the section: a table populated from
+    // /json/info (the "Sensor ..." entries) plus a Refresh button. Guarded so it
+    // no-ops if anything is missing.
+    oappend(F("(function(){try{if(d.getElementById('si2cRd'))return;"));
+    oappend(F("var en=d.getElementsByName('Sensors I2C:Enabled');if(!en.length)return;"));
+    oappend(F("var sec=en[en.length-1];while(sec&&!(sec.nodeType==1&&sec.tagName=='DIV'&&sec.className=='sec'))sec=sec.parentNode;if(!sec)return;"));
+    oappend(F("var box=d.createElement('div');box.style.margin='4px 0 8px 0';"));
+    oappend(F("var T=d.createElement('table');T.id='si2cRd';T.style.borderCollapse='collapse';box.appendChild(T);box.appendChild(d.createElement('br'));"));
+    oappend(F("var btn=d.createElement('button');btn.type='button';btn.textContent='\\u21bb Refresh readings';btn.style.marginTop='4px';box.appendChild(btn);"));
+    oappend(F("function C(t,x,r){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='2px 10px';c.style.border='1px solid rgba(128,128,128,.35)';if(r)c.style.textAlign='right';return c;}"));
+    oappend(F("function row(k,v){var tr=d.createElement('tr');tr.appendChild(C('td',k));tr.appendChild(C('td',v,1));T.appendChild(tr);}"));
+    oappend(F("function refresh(){T.innerHTML='';row('Reading','Value');fetch('/json/info').then(function(r){return r.json();}).then(function(j){var u=(j&&j.u)||{},any=0;Object.keys(u).forEach(function(k){if(k.indexOf('Sensor ')!==0)return;any=1;var v=u[k];row(k.replace(/^Sensor /,''),Array.isArray(v)?v.filter(function(x){return x!==''&&x!=null;}).join(' '):(''+v));});if(!any)row('(no readings)','');}).catch(function(){row('(fetch failed)','');});}"));
+    oappend(F("btn.addEventListener('click',refresh);"));
+    oappend(F("var h3=sec.querySelector('h3');if(h3&&h3.nextSibling)sec.insertBefore(box,h3.nextSibling);else sec.appendChild(box);"));
+    oappend(F("refresh();}catch(e){}})();"));
   }
 
   void addToConfig(JsonObject &root) {

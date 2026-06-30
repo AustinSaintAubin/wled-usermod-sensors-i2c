@@ -78,6 +78,10 @@ flags) — copy it to the WLED repo root as `platformio_override.ini` and adjust
 
 ## Settings (Config → Usermods → "Sensors I2C")
 
+The top of the section shows a **live readings table** (Temperature / Humidity / Pressure /
+Illuminance / Auto-Brightness) with a **↻ Refresh readings** button that re-fetches current
+values from `/json/info` — so you can check the sensors without leaving the settings page.
+
 **Sensors**
 
 | Setting                    | Default | Notes |
@@ -125,8 +129,9 @@ to your preference. Clear it with *Reset Offset* (or the JSON command below).
 
 ## External access (Home Assistant & similar)
 
-- **Info page / `/json/info`** — Temperature, Humidity, Pressure, Illuminance,
-  and an Auto-Brightness status line.
+- **Info page / `/json/info`** — readings appear (grouped, each prefixed with `Sensor `) as
+  `Sensor Temperature`, `Sensor Humidity`, `Sensor Pressure`, `Sensor Illuminance`, and a
+  `Sensor Auto-Brightness` status line.
 - **MQTT** — published under your WLED device topic:
 
   ```
