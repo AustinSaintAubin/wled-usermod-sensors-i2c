@@ -355,13 +355,31 @@ public:
     // unit / help hints
     oappend(F("addInfo('Sensors I2C:Sensors:Read Interval',1,'sec');"));
     oappend(F("addInfo('Sensors I2C:Sensors:Decimals',1,'(0-3)');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Lux Min',1,'lx → Min Brightness');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Lux Max',1,'lx → Max Brightness');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Brightness Min',1,'(0-255)');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Brightness Max',1,'(0-255)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Smoothing',1,'% (0=off, higher=smoother)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Update Interval',1,'sec');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Reset Offset',1,'apply once to clear manual offset');"));
+
+    // Arrange the four Lux/Brightness fields into a 2x2 mapping table
+    // (rows Min/Max x columns Lux|Brightness). Moves the existing input nodes
+    // so their name/value are preserved; guarded so it no-ops if the settings
+    // DOM ever changes (falls back to WLED's default field rendering).
+    oappend(F("(function(){try{var P='Sensors I2C:Auto Brightness:';"));
+    oappend(F("function vis(n){var a=d.getElementsByName(P+n);return a.length?a[a.length-1]:null;}"));
+    oappend(F("function hid(e){var p=e.previousSibling;while(p&&p.nodeType!=1)p=p.previousSibling;return(p&&p.tagName=='INPUT'&&p.type=='hidden')?p:null;}"));
+    oappend(F("function strip(e){var s=hid(e)||e,n=s.previousSibling;while(n&&n.nodeType==3){var x=n;n=n.previousSibling;x.remove();}var m=e.nextSibling;while(m){var q=m.nextSibling,b=(m.nodeType==1&&m.tagName=='BR');m.remove();if(b)break;m=q;}}"));
+    oappend(F("var F=['Lux Min','Lux Max','Brightness Min','Brightness Max'],E={},ok=1;"));
+    oappend(F("F.forEach(function(n){E[n]=vis(n);if(!E[n])ok=0;});if(!ok)return;"));
+    oappend(F("var pa=E['Lux Min'].parentNode;F.forEach(function(n){strip(E[n]);});"));
+    oappend(F("var ref=hid(E['Lux Min'])||E['Lux Min'];"));
+    oappend(F("function C(t,x){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='2px 8px';c.style.border='1px solid rgba(128,128,128,.35)';c.style.textAlign='center';return c;}"));
+    oappend(F("var T=d.createElement('table');T.style.borderCollapse='collapse';T.style.margin='3px 0 6px 0';"));
+    oappend(F("var h=d.createElement('tr');h.appendChild(C('th',''));h.appendChild(C('th','Lux (lx)'));h.appendChild(C('th','Brightness (0-255)'));T.appendChild(h);"));
+    oappend(F("var r1=d.createElement('tr'),a1=C('td'),b1=C('td');r1.appendChild(C('td','Min'));r1.appendChild(a1);r1.appendChild(b1);T.appendChild(r1);"));
+    oappend(F("var r2=d.createElement('tr'),a2=C('td'),b2=C('td');r2.appendChild(C('td','Max'));r2.appendChild(a2);r2.appendChild(b2);T.appendChild(r2);"));
+    oappend(F("pa.insertBefore(T,ref);"));
+    oappend(F("function mv(n,c){var e=E[n],g=hid(e);e.className='';e.style.setProperty('width','6em','important');if(g)c.appendChild(g);c.appendChild(e);}"));
+    oappend(F("mv('Lux Min',a1);mv('Brightness Min',b1);mv('Lux Max',a2);mv('Brightness Max',b2);"));
+    oappend(F("}catch(e){}})();"));
   }
 
   void addToConfig(JsonObject &root) {
