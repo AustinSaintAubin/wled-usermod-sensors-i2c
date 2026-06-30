@@ -23,6 +23,8 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
+#define SENSORS_I2C_VERSION "1.0.2"   // keep in sync with library.json
+
 class UsermodSensorsI2C : public Usermod
 {
 private:
@@ -284,9 +286,12 @@ public:
     JsonObject user = root[F("u")];
     if (user.isNull()) user = root.createNestedObject(F("u"));
 
+    // Mod identity + version (like the word-clock usermod shows on the info page)
+    JsonArray ver = user.createNestedArray(F("Sensors I2C"));
+    ver.add(F("v" SENSORS_I2C_VERSION));
+
     if (!enabled) {
-      JsonArray j = user.createNestedArray(F("Sensors I2C"));
-      j.add(F("disabled"));
+      ver.add(F("(disabled)"));
       return;
     }
 
