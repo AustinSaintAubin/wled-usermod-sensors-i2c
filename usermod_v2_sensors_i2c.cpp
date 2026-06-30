@@ -297,12 +297,23 @@ public:
 
     // Each reading is prefixed with "Sensor " so the entries group together on the
     // Info page and can be picked out by the live readings table on the settings page.
-    // Temperature (HTU21D preferred, BMP180 fallback)
+    // Temperature (HTU21D preferred, BMP180 fallback) — show both °C and °F,
+    // ordered by the configured primary unit.
     {
       JsonArray j = user.createNestedArray(F("Sensor Temperature"));
       if (!htuFound && !bmpFound) j.add(F("Not Found"));
       else if (isnan(curTempC)) j.add(F("-"));
-      else { j.add(roundDec(toDisplayTemp(curTempC))); j.add(tempUnitStr()); }
+      else {
+        float c = roundDec(curTempC);
+        float f = roundDec(curTempC * 1.8f + 32.0f);
+        if (tempUnit == 1) {
+          j.add(f);
+          j.add(String(F(" °F / ")) + String(c, (unsigned)decimals) + F(" °C"));
+        } else {
+          j.add(c);
+          j.add(String(F(" °C / ")) + String(f, (unsigned)decimals) + F(" °F"));
+        }
+      }
     }
     // Humidity (HTU21D)
     {
