@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.2"   // keep in sync with library.json
+#define SENSORS_I2C_VERSION "1.0.3"   // keep in sync with library.json
 
 class UsermodSensorsI2C : public Usermod
 {
@@ -38,6 +38,8 @@ private:
   uint8_t  decimals = 1;         // decimal places for temp/humidity/pressure
   bool     publishChangesOnly = true;
   bool     haDiscovery = false;  // publish Home Assistant MQTT discovery
+  bool     showDerived = true;   // compute/show/publish derived values (see below)
+  int16_t  stationAltitude = 0;  // meters above sea level, for sea-level pressure
 
   // ------- auto-brightness settings -------
   bool     autoBriEnabled = false;
@@ -61,8 +63,16 @@ private:
   float curPressure= NAN;   // hPa
   float curLux     = -1;    // lx
 
+  // derived values (computed from the above; all in base SI-ish units)
+  float curAbsHum   = NAN;  // g/m³   (from temp + humidity)
+  float curDewC     = NAN;  // °C     (from temp + humidity)
+  float curHeatC    = NAN;  // °C     (from temp + humidity)
+  float curSeaLevel = NAN;  // hPa    (pressure adjusted to sea level)
+  float curAltitude = NAN;  // m      (estimated from pressure, standard atmosphere)
+
   // change tracking for "publish only on change"
   float lastTempC = NAN, lastHum = NAN, lastPressure = NAN, lastLux = NAN;
+  float lastAbsHum = NAN, lastDewC = NAN, lastHeatC = NAN, lastSeaLevel = NAN, lastAltitude = NAN;
 
   unsigned long lastReadTime = 0;
   unsigned long lastBriTime  = 0;
@@ -102,6 +112,53 @@ private:
     return (tempUnit == 1) ? F("°F") : F("°C");
   }
 
+  // Add a temperature reading to the info page in both °C and °F, ordered by the
+  // configured primary unit (shared by Temperature, Dew Point, Heat Index).
+  void addTempInfo(JsonObject &user, const __FlashStringHelper *label, float c) {
+    JsonArray j = user.createNestedArray(label);
+    if (isnan(c)) { j.add(F("-")); return; }
+    float cc = roundDec(c), ff = roundDec(c * 1.8f + 32.0f);
+    if (tempUnit == 1) { j.add(ff); j.add(String(F(" °F / ")) + String(cc, (unsigned)decimals) + F(" °C")); }
+    else               { j.add(cc); j.add(String(F(" °C / ")) + String(ff, (unsigned)decimals) + F(" °F")); }
+  }
+
+  // NWS Rothfusz "feels like" heat index. Computed in °F, returned in °C.
+  // Only meaningful when warm; below ~80 °F it just returns the air temperature.
+  float heatIndexC(float tC, float rh) {
+    float tF = tC * 1.8f + 32.0f;
+    if (tF < 80.0f) return tC;
+    float hi = -42.379f + 2.04901523f * tF + 10.14333127f * rh
+             - 0.22475541f * tF * rh - 0.00683783f * tF * tF - 0.05481717f * rh * rh
+             + 0.00122874f * tF * tF * rh + 0.00085282f * tF * rh * rh
+             - 0.00000199f * tF * tF * rh * rh;
+    if (rh < 13.0f && tF >= 80.0f && tF <= 112.0f)
+      hi -= ((13.0f - rh) / 4.0f) * sqrtf((17.0f - fabsf(tF - 95.0f)) / 17.0f);
+    else if (rh > 85.0f && tF >= 80.0f && tF <= 87.0f)
+      hi += ((rh - 85.0f) / 10.0f) * ((87.0f - tF) / 5.0f);
+    return (hi - 32.0f) / 1.8f;
+  }
+
+  // Derive absolute humidity / dew point / heat index (need temp + humidity from
+  // HTU21D) and sea-level pressure / altitude (need BMP180 pressure).
+  void computeDerived() {
+    if (!showDerived) return;
+    if (htuFound && !isnan(curTempC) && !isnan(curHum)) {
+      float T = curTempC, RH = curHum;
+      curAbsHum = 6.112f * expf((17.67f * T) / (T + 243.5f)) * RH * 2.1674f / (273.15f + T);
+      float g = logf(RH / 100.0f) + (17.62f * T) / (243.12f + T);
+      curDewC = 243.12f * g / (17.62f - g);
+      curHeatC = heatIndexC(T, RH);
+    } else {
+      curAbsHum = curDewC = curHeatC = NAN;
+    }
+    if (bmpFound && !isnan(curPressure)) {
+      curSeaLevel = bmp.seaLevelForAltitude((float)stationAltitude, curPressure);
+      curAltitude = bmp.pressureToAltitude(1013.25f, curPressure);
+    } else {
+      curSeaLevel = curAltitude = NAN;
+    }
+  }
+
   void readSensors() {
     if (htuFound) {
       float t = htu.readTemperature();
@@ -120,6 +177,8 @@ private:
       float lux = lightMeter.readLightLevel();
       if (lux >= 0) curLux = lux;
     }
+
+    computeDerived();
 
 #ifndef WLED_DISABLE_MQTT
     publishSensors();
@@ -196,6 +255,22 @@ private:
         lastLux = curLux;
       }
     }
+    if (showDerived) {
+      publishDerived("absolute_humidity", curAbsHum, lastAbsHum);
+      publishDerived("dew_point",   toDisplayTemp(curDewC),  lastDewC);
+      publishDerived("heat_index",  toDisplayTemp(curHeatC), lastHeatC);
+      publishDerived("sea_level_pressure", curSeaLevel, lastSeaLevel);
+      publishDerived("altitude",    curAltitude, lastAltitude);
+    }
+  }
+
+  // publish one derived value (rounded, change-tracked). `last` is updated in place.
+  void publishDerived(const char *topic, float value, float &last) {
+    if (isnan(value)) return;
+    float r = roundDec(value);
+    if (publishChangesOnly && r == last) return;
+    publishMqtt(topic, String(value, (unsigned)decimals));
+    last = r;
   }
 
   void createMqttSensor(const String &name, const String &topic, const String &deviceClass, const String &unit) {
@@ -238,6 +313,23 @@ private:
     if (bhFound) {
       snprintf_P(topic, 127, PSTR("%s/illuminance"), mqttDeviceTopic);
       createMqttSensor(F("Illuminance"), topic, F("illuminance"), F("lx"));
+    }
+    if (showDerived) {
+      const __FlashStringHelper *tu = tempUnit == 1 ? F("°F") : F("°C");
+      if (htuFound) {
+        snprintf_P(topic, 127, PSTR("%s/absolute_humidity"), mqttDeviceTopic);
+        createMqttSensor(F("Absolute Humidity"), topic, F(""), F("g/m³"));
+        snprintf_P(topic, 127, PSTR("%s/dew_point"), mqttDeviceTopic);
+        createMqttSensor(F("Dew Point"), topic, F("temperature"), tu);
+        snprintf_P(topic, 127, PSTR("%s/heat_index"), mqttDeviceTopic);
+        createMqttSensor(F("Heat Index"), topic, F("temperature"), tu);
+      }
+      if (bmpFound) {
+        snprintf_P(topic, 127, PSTR("%s/sea_level_pressure"), mqttDeviceTopic);
+        createMqttSensor(F("Sea-Level Pressure"), topic, F("pressure"), F("hPa"));
+        snprintf_P(topic, 127, PSTR("%s/altitude"), mqttDeviceTopic);
+        createMqttSensor(F("Altitude"), topic, F("distance"), F("m"));
+      }
     }
   }
 #endif
@@ -297,24 +389,9 @@ public:
 
     // Each reading is prefixed with "Sensor " so the entries group together on the
     // Info page and can be picked out by the live readings table on the settings page.
-    // Temperature (HTU21D preferred, BMP180 fallback) — show both °C and °F,
-    // ordered by the configured primary unit.
-    {
-      JsonArray j = user.createNestedArray(F("Sensor Temperature"));
-      if (!htuFound && !bmpFound) j.add(F("Not Found"));
-      else if (isnan(curTempC)) j.add(F("-"));
-      else {
-        float c = roundDec(curTempC);
-        float f = roundDec(curTempC * 1.8f + 32.0f);
-        if (tempUnit == 1) {
-          j.add(f);
-          j.add(String(F(" °F / ")) + String(c, (unsigned)decimals) + F(" °C"));
-        } else {
-          j.add(c);
-          j.add(String(F(" °C / ")) + String(f, (unsigned)decimals) + F(" °F"));
-        }
-      }
-    }
+    // Temperature (HTU21D preferred, BMP180 fallback) — both °C and °F.
+    if (!htuFound && !bmpFound) user.createNestedArray(F("Sensor Temperature")).add(F("Not Found"));
+    else addTempInfo(user, F("Sensor Temperature"), curTempC);
     // Humidity (HTU21D)
     {
       JsonArray j = user.createNestedArray(F("Sensor Humidity"));
@@ -322,12 +399,26 @@ public:
       else if (isnan(curHum)) j.add(F("-"));
       else { j.add(roundDec(curHum)); j.add(F("%")); }
     }
+    // Derived from temperature + humidity (HTU21D)
+    if (showDerived && htuFound) {
+      JsonArray j = user.createNestedArray(F("Sensor Absolute Humidity"));
+      if (isnan(curAbsHum)) j.add(F("-")); else { j.add(roundDec(curAbsHum)); j.add(F("g/m³")); }
+      addTempInfo(user, F("Sensor Dew Point"), curDewC);
+      addTempInfo(user, F("Sensor Heat Index"), curHeatC);
+    }
     // Pressure (BMP180)
     {
       JsonArray j = user.createNestedArray(F("Sensor Pressure"));
       if (!bmpFound) j.add(F("Not Found"));
       else if (isnan(curPressure)) j.add(F("-"));
       else { j.add(roundDec(curPressure)); j.add(F("hPa")); }
+    }
+    // Derived from pressure (BMP180)
+    if (showDerived && bmpFound) {
+      { JsonArray j = user.createNestedArray(F("Sensor Sea-Level Pressure"));
+        if (isnan(curSeaLevel)) j.add(F("-")); else { j.add(roundDec(curSeaLevel)); j.add(F("hPa")); } }
+      { JsonArray j = user.createNestedArray(F("Sensor Altitude"));
+        if (isnan(curAltitude)) j.add(F("-")); else { j.add(roundDec(curAltitude)); j.add(F("m")); } }
     }
     // Illuminance (BH1750)
     {
@@ -375,6 +466,8 @@ public:
     // unit / help hints
     oappend(F("addInfo('Sensors I2C:Sensors:Read Interval',1,'sec');"));
     oappend(F("addInfo('Sensors I2C:Sensors:Decimals',1,'(0-3)');"));
+    oappend(F("addInfo('Sensors I2C:Sensors:Station Altitude',1,'m (for sea-level pressure)');"));
+    oappend(F("addInfo('Sensors I2C:Sensors:Show Derived Values',1,'abs. humidity, dew point, heat index, sea-level pressure, altitude');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Smoothing',1,'% (0=off)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Update Interval',1,'sec');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Reset Offset',1,'clears manual offset');"));
@@ -428,6 +521,8 @@ public:
     s[F("Read Interval")] = readInterval;
     s[F("Temperature Unit")] = tempUnit;
     s[F("Decimals")] = decimals;
+    s[F("Station Altitude")] = stationAltitude;
+    s[F("Show Derived Values")] = showDerived;
     s[F("Publish Changes Only")] = publishChangesOnly;
     s[F("Home Assistant Discovery")] = haDiscovery;
 
@@ -457,6 +552,8 @@ public:
     configComplete &= getJsonValue(s[F("Read Interval")], readInterval, 5);
     configComplete &= getJsonValue(s[F("Temperature Unit")], tempUnit, 0);
     configComplete &= getJsonValue(s[F("Decimals")], decimals, 1);
+    configComplete &= getJsonValue(s[F("Station Altitude")], stationAltitude, 0);
+    configComplete &= getJsonValue(s[F("Show Derived Values")], showDerived, true);
     configComplete &= getJsonValue(s[F("Publish Changes Only")], publishChangesOnly, true);
     configComplete &= getJsonValue(s[F("Home Assistant Discovery")], haDiscovery, false);
 
@@ -475,6 +572,7 @@ public:
     readInterval = constrain(readInterval, 1, 3600);
     decimals = constrain(decimals, 0, 3);
     tempUnit = constrain(tempUnit, 0, 1);
+    stationAltitude = constrain(stationAltitude, -430, 9000); // Dead Sea .. Everest
     if (luxMax <= luxMin) luxMax = luxMin + 1;
     if (briMax < briMin) { uint8_t t = briMin; briMin = briMax; briMax = t; }
     smoothing = constrain(smoothing, 0, 95);
