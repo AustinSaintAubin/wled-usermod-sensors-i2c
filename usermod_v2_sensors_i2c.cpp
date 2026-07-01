@@ -40,6 +40,7 @@ private:
   bool     haDiscovery = false;  // publish Home Assistant MQTT discovery
   bool     showDerived = true;   // compute/show/publish derived values (see below)
   int16_t  stationAltitude = 0;  // meters above sea level, for sea-level pressure
+  uint8_t  bhAddress = 0x23;     // BH1750 I2C address (0x23 default, 0x5C if ADDR high)
 
   // ------- auto-brightness settings -------
   bool     autoBriEnabled = false;
@@ -57,6 +58,8 @@ private:
   Adafruit_HTU21DF          htu = Adafruit_HTU21DF();
   Adafruit_BMP085_Unified   bmp = Adafruit_BMP085_Unified(10085);
   bool bhFound = false, htuFound = false, bmpFound = false;
+  uint8_t htuFails = 0, bhFails = 0;   // consecutive read failures -> mark lost + re-probe
+  unsigned long lastProbeTime = 0;     // periodic re-probe of missing sensors
 
   float curTempC   = NAN;   // chosen temperature source, always stored in Celsius
   float curHum     = NAN;   // %
@@ -163,8 +166,13 @@ private:
     if (htuFound) {
       float t = htu.readTemperature();
       float h = htu.readHumidity();
-      if (!isnan(t)) curTempC = t;   // HTU21D is the preferred temperature source
-      if (!isnan(h)) curHum = h;
+      if (isnan(t) || isnan(h)) {
+        if (++htuFails >= 3) htuFound = false; // lost -> periodic re-probe recovers it
+      } else {
+        htuFails = 0;
+        curTempC = t;   // HTU21D is the preferred temperature source
+        curHum = h;
+      }
     }
     if (bmpFound) {
       float p = NAN, t = NAN;
@@ -175,7 +183,12 @@ private:
     }
     if (bhFound) {
       float lux = lightMeter.readLightLevel();
-      if (lux >= 0) curLux = lux;
+      if (lux < 0) {
+        if (++bhFails >= 3) bhFound = false;
+      } else {
+        bhFails = 0;
+        curLux = lux;
+      }
     }
 
     computeDerived();
@@ -335,10 +348,19 @@ private:
 #endif
 
   void initSensors() {
-    bhFound  = lightMeter.begin();
+    bhFound  = lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhAddress);
     htuFound = htu.begin();
     bmpFound = bmp.begin();
+    htuFails = bhFails = 0;
     DEBUG_PRINTF("[%s] BH1750:%d HTU21D:%d BMP180:%d\n", _name, bhFound, htuFound, bmpFound);
+  }
+
+  // Periodically retry any sensor not currently present (boot ordering, recovery
+  // after a dropout, or a wiring fix) without disturbing the ones that work.
+  void probeMissing() {
+    if (!bhFound  && lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhAddress)) { bhFound = true; bhFails = 0; }
+    if (!htuFound && htu.begin()) { htuFound = true; htuFails = 0; }
+    if (!bmpFound && bmp.begin())   bmpFound = true;
   }
 
 public:
@@ -360,6 +382,12 @@ public:
     if (autoBriEnabled && bhFound && now - lastBriTime >= (unsigned long)briUpdateInterval * 1000) {
       lastBriTime = now;
       updateAutoBrightness();
+    }
+
+    // recover any sensor that isn't currently present (every 30 s)
+    if ((!bhFound || !htuFound || !bmpFound) && now - lastProbeTime >= 30000) {
+      lastProbeTime = now;
+      probeMissing();
     }
   }
 
@@ -463,6 +491,10 @@ public:
     oappend(F("dd=addDropdown('Sensors I2C:Sensors','Temperature Unit');"));
     oappend(F("addOption(dd,'Celsius (°C)','0');"));
     oappend(F("addOption(dd,'Fahrenheit (°F)','1');"));
+    // BH1750 address dropdown (0x23 default / 0x5C when ADDR pin high)
+    oappend(F("dd=addDropdown('Sensors I2C:Sensors','BH1750 Address');"));
+    oappend(F("addOption(dd,'0x23 (default)','35');"));
+    oappend(F("addOption(dd,'0x5C','92');"));
     // unit / help hints
     oappend(F("addInfo('Sensors I2C:Sensors:Read Interval',1,'sec');"));
     oappend(F("addInfo('Sensors I2C:Sensors:Decimals',1,'(0-3)');"));
@@ -521,6 +553,7 @@ public:
     s[F("Read Interval")] = readInterval;
     s[F("Temperature Unit")] = tempUnit;
     s[F("Decimals")] = decimals;
+    s[F("BH1750 Address")] = bhAddress;
     s[F("Station Altitude")] = stationAltitude;
     s[F("Show Derived Values")] = showDerived;
     s[F("Publish Changes Only")] = publishChangesOnly;
@@ -552,6 +585,7 @@ public:
     configComplete &= getJsonValue(s[F("Read Interval")], readInterval, 5);
     configComplete &= getJsonValue(s[F("Temperature Unit")], tempUnit, 0);
     configComplete &= getJsonValue(s[F("Decimals")], decimals, 1);
+    configComplete &= getJsonValue(s[F("BH1750 Address")], bhAddress, 0x23);
     configComplete &= getJsonValue(s[F("Station Altitude")], stationAltitude, 0);
     configComplete &= getJsonValue(s[F("Show Derived Values")], showDerived, true);
     configComplete &= getJsonValue(s[F("Publish Changes Only")], publishChangesOnly, true);
@@ -572,6 +606,7 @@ public:
     readInterval = constrain(readInterval, 1, 3600);
     decimals = constrain(decimals, 0, 3);
     tempUnit = constrain(tempUnit, 0, 1);
+    if (bhAddress != 0x23 && bhAddress != 0x5C) bhAddress = 0x23;
     stationAltitude = constrain(stationAltitude, -430, 9000); // Dead Sea .. Everest
     if (luxMax <= luxMin) luxMax = luxMin + 1;
     if (briMax < briMin) { uint8_t t = briMin; briMin = briMax; briMax = t; }

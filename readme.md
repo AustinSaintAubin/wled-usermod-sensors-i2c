@@ -1,5 +1,6 @@
 # Sensors I2C | WLED usermod (HTU21D + BMP180 + BH1750FVI)
 **Author:** Austin St. Aubin <austinsaintaubin@gmail.com> | **License:** MIT
+[![build](https://github.com/AustinSaintAubin/wled-usermod-sensors-i2c/actions/workflows/build.yml/badge.svg)](https://github.com/AustinSaintAubin/wled-usermod-sensors-i2c/actions/workflows/build.yml)
 
 A community [WLED](https://github.com/wled/WLED) usermod for the common 3-in-1 I²C
 environmental breakout. It reports temperature, humidity, pressure and ambient light to
@@ -27,9 +28,12 @@ The three addresses don't collide, so the whole module sits on one bus.
 - Shows every reading on the WLED **Info page** and exposes them in **`/json/info`**.
 - Publishes readings over **MQTT** with optional **Home Assistant auto-discovery**
   (entirely optional — the mod also runs fine with MQTT disabled).
+- **Derived values** from the raw readings: absolute humidity, dew point, heat index
+  (temp + humidity) and sea-level pressure + estimated altitude (pressure).
 - Uses the **light sensor to drive overall LED brightness** with a perceptual
   (logarithmic) lux→brightness map, smoothing, and a relative manual-offset.
-- A missing chip only disables that one sensor; the others keep working.
+- A missing chip only disables that one sensor; the others keep working, and a sensor that
+  drops off the bus is **re-probed automatically** (every 30 s) and recovers.
 - **Self-contained** — makes no changes to `wled00/` and uses a local usermod id, so it
   drops in cleanly as an out-of-tree module.
 
@@ -87,8 +91,11 @@ values from `/json/info` — so you can check the sensors without leaving the se
 | Setting                    | Default | Notes |
 |----------------------------|---------|-------|
 | Read Interval              | 5 s     | How often sensors are sampled / published |
-| Temperature Unit           | Celsius | °C or °F (display + MQTT) |
+| Temperature Unit           | Celsius | °C or °F (display + MQTT); temperatures show both units |
 | Decimals                   | 1       | Rounding for temp / humidity / pressure (0–3) |
+| BH1750 Address             | 0x23    | Light-sensor I²C address (`0x23`, or `0x5C` if its ADDR pin is high) |
+| Station Altitude           | 0 m     | Your altitude above sea level, used for sea-level pressure |
+| Show Derived Values        | on      | Compute/show/publish absolute humidity, dew point, heat index, sea-level pressure, altitude |
 | Publish Changes Only       | on      | Only publish a value over MQTT when it changes |
 | Home Assistant Discovery   | off     | Publish HA MQTT discovery configs |
 
@@ -130,8 +137,9 @@ to your preference. Clear it with *Reset Offset* (or the JSON command below).
 ## External access (Home Assistant & similar)
 
 - **Info page / `/json/info`** — readings appear (grouped, each prefixed with `Sensor `) as
-  `Sensor Temperature`, `Sensor Humidity`, `Sensor Pressure`, `Sensor Illuminance`, and a
-  `Sensor Auto-Brightness` status line.
+  `Sensor Temperature`, `Sensor Humidity`, `Sensor Pressure`, `Sensor Illuminance`, the
+  derived `Sensor Absolute Humidity` / `Dew Point` / `Heat Index` / `Sea-Level Pressure` /
+  `Altitude` (when *Show Derived Values* is on), and a `Sensor Auto-Brightness` status line.
 - **MQTT** — published under your WLED device topic:
 
   ```
@@ -139,11 +147,15 @@ to your preference. Clear it with *Reset Offset* (or the JSON command below).
   <mqttDeviceTopic>/humidity
   <mqttDeviceTopic>/pressure
   <mqttDeviceTopic>/illuminance
+  <mqttDeviceTopic>/absolute_humidity   (derived)
+  <mqttDeviceTopic>/dew_point           (derived)
+  <mqttDeviceTopic>/heat_index          (derived)
+  <mqttDeviceTopic>/sea_level_pressure  (derived)
+  <mqttDeviceTopic>/altitude            (derived)
   ```
 
-- **Home Assistant** — with *Home Assistant Discovery* on and MQTT connected, four
-  sensor entities (with proper device classes/units) auto-register under the WLED
-  device.
+- **Home Assistant** — with *Home Assistant Discovery* on and MQTT connected, the sensor
+  entities (with proper device classes/units) auto-register under the WLED device.
 - **`/json/state`** — exposes `{"SensorsI2C":{"autoBri":<bool>,"offset":<int>}}`.
 
 ## Controlling auto-brightness from a preset / API
@@ -164,7 +176,7 @@ brightness".
 
 ## Notes / limitations
 
-- I²C addresses are fixed defaults (no per-sensor address setting yet).
+- BH1750 address is selectable (`0x23`/`0x5C`); HTU21D (`0x40`) and BMP180 (`0x77`) are fixed.
 - ESP32 only (no ESP8266-specific tuning).
 - Uses `USERMOD_ID_SENSORS_I2C` defined locally in the `.cpp` (defaults to `900`) so the
   module needs no edit to `wled00/const.h`.
