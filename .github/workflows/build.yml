@@ -21,7 +21,9 @@ jobs:
       - name: Checkout usermod
         uses: actions/checkout@v4
         with:
-          path: usermod
+          # Folder name must match the library.json name so PlatformIO registers it
+          # as "wled-usermod-sensors-i2c" (recognized via the wled- prefix).
+          path: wled-usermod-sensors-i2c
 
       - name: Checkout WLED (${{ matrix.wled_ref }})
         uses: actions/checkout@v4
@@ -40,7 +42,7 @@ jobs:
           path: |
             ~/.platformio
             ~/.cache/pip
-          key: pio-${{ matrix.wled_ref }}-${{ hashFiles('usermod/library.json') }}
+          key: pio-${{ matrix.wled_ref }}-${{ hashFiles('wled-usermod-sensors-i2c/library.json') }}
           restore-keys: pio-${{ matrix.wled_ref }}-
 
       - name: Install PlatformIO
@@ -51,7 +53,7 @@ jobs:
           cat > wled/platformio_override.ini <<'EOF'
           [env:sensors_i2c_ci]
           extends = env:esp32dev
-          custom_usermods = symlink://${{ github.workspace }}/usermod
+          custom_usermods = symlink://${{ github.workspace }}/wled-usermod-sensors-i2c
           build_flags = ${common.build_flags} ${esp32_idf_V4.build_flags}
             -DARDUINO_USB_CDC_ON_BOOT=0
             -D I2CSDAPIN=21
