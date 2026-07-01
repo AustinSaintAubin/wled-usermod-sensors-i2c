@@ -72,7 +72,7 @@ The required sensor libraries (BH1750, Adafruit HTU21DF, Adafruit BMP085 Unified
 Adafruit Unified Sensor) are listed as `dependencies` in `library.json` and installed
 **automatically** by PlatformIO — no manual `lib_deps`.
 
-A ready-to-copy [`platformio_override.sample.ini`](platformio_override.sample.ini) is included
+A ready-to-copy [`platformio_override.sample.ini`](examples/platformio_override.sample.ini) is included
 (the git-URL `custom_usermods` line, the required I²C pin flags, OTA upload env, and size-trim
 flags) — copy it to the WLED repo root as `platformio_override.ini` and adjust.
 
