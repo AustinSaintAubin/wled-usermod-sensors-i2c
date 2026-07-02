@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.3"   // keep in sync with library.json
+#define SENSORS_I2C_VERSION "1.0.4"   // keep in sync with library.json
 
 class UsermodSensorsI2C : public Usermod
 {
@@ -38,7 +38,9 @@ private:
   uint8_t  decimals = 1;         // decimal places for temp/humidity/pressure
   bool     publishChangesOnly = true;
   bool     haDiscovery = false;  // publish Home Assistant MQTT discovery
-  bool     showDerived = true;   // compute/show/publish derived values (see below)
+  // per-reading enable toggles (all default on) — gate the info page + MQTT/HA
+  bool enTemp = true, enHum = true, enPress = true, enLux = true;              // raw
+  bool enAbsHum = true, enDew = true, enHeat = true, enSLP = true, enAlt = true; // derived
   int16_t  stationAltitude = 0;  // meters above sea level, for sea-level pressure
   uint8_t  bhAddress = 0x23;     // BH1750 I2C address (0x23 default, 0x5C if ADDR high)
 
@@ -96,6 +98,7 @@ private:
   static const char _name[];
   static const char _enabled[];
   static const char _grpSensors[];
+  static const char _grpReadings[];
   static const char _grpAutoBri[];
   static const char _stateKey[];
 
@@ -144,7 +147,6 @@ private:
   // Derive absolute humidity / dew point / heat index (need temp + humidity from
   // HTU21D) and sea-level pressure / altitude (need BMP180 pressure).
   void computeDerived() {
-    if (!showDerived) return;
     if (htuFound && !isnan(curTempC) && !isnan(curHum)) {
       float T = curTempC, RH = curHum;
       curAbsHum = 6.112f * expf((17.67f * T) / (T + 243.5f)) * RH * 2.1674f / (273.15f + T);
@@ -241,40 +243,38 @@ private:
 
   void publishSensors() {
     if (!WLED_MQTT_CONNECTED) return;
-    if (htuFound || bmpFound) {
+    if (enTemp && (htuFound || bmpFound)) {
       float t = roundDec(curTempC);
       if (!isnan(t) && (!publishChangesOnly || t != lastTempC)) {
         publishMqtt("temperature", String(toDisplayTemp(curTempC), (unsigned)decimals));
         lastTempC = t;
       }
     }
-    if (htuFound) {
+    if (enHum && htuFound) {
       float h = roundDec(curHum);
       if (!isnan(h) && (!publishChangesOnly || h != lastHum)) {
         publishMqtt("humidity", String(curHum, (unsigned)decimals));
         lastHum = h;
       }
     }
-    if (bmpFound) {
+    if (enPress && bmpFound) {
       float p = roundDec(curPressure);
       if (!isnan(p) && (!publishChangesOnly || p != lastPressure)) {
         publishMqtt("pressure", String(curPressure, (unsigned)decimals));
         lastPressure = p;
       }
     }
-    if (bhFound) {
+    if (enLux && bhFound) {
       if (curLux >= 0 && (!publishChangesOnly || curLux != lastLux)) {
         publishMqtt("illuminance", String(curLux, 1));
         lastLux = curLux;
       }
     }
-    if (showDerived) {
-      publishDerived("absolute_humidity", curAbsHum, lastAbsHum);
-      publishDerived("dew_point",   toDisplayTemp(curDewC),  lastDewC);
-      publishDerived("heat_index",  toDisplayTemp(curHeatC), lastHeatC);
-      publishDerived("sea_level_pressure", curSeaLevel, lastSeaLevel);
-      publishDerived("altitude",    curAltitude, lastAltitude);
-    }
+    if (enAbsHum) publishDerived("absolute_humidity", curAbsHum, lastAbsHum);
+    if (enDew)    publishDerived("dew_point",   toDisplayTemp(curDewC),  lastDewC);
+    if (enHeat)   publishDerived("heat_index",  toDisplayTemp(curHeatC), lastHeatC);
+    if (enSLP)    publishDerived("sea_level_pressure", curSeaLevel, lastSeaLevel);
+    if (enAlt)    publishDerived("altitude",    curAltitude, lastAltitude);
   }
 
   // publish one derived value (rounded, change-tracked). `last` is updated in place.
@@ -311,38 +311,42 @@ private:
 
   void mqttInitialize() {
     char topic[128];
-    if (htuFound || bmpFound) {
+    const __FlashStringHelper *tu = tempUnit == 1 ? F("°F") : F("°C");
+    if (enTemp && (htuFound || bmpFound)) {
       snprintf_P(topic, 127, PSTR("%s/temperature"), mqttDeviceTopic);
-      createMqttSensor(F("Temperature"), topic, F("temperature"), tempUnit == 1 ? F("°F") : F("°C"));
+      createMqttSensor(F("Temperature"), topic, F("temperature"), tu);
     }
-    if (htuFound) {
+    if (enHum && htuFound) {
       snprintf_P(topic, 127, PSTR("%s/humidity"), mqttDeviceTopic);
       createMqttSensor(F("Humidity"), topic, F("humidity"), F("%"));
     }
-    if (bmpFound) {
+    if (enPress && bmpFound) {
       snprintf_P(topic, 127, PSTR("%s/pressure"), mqttDeviceTopic);
       createMqttSensor(F("Pressure"), topic, F("pressure"), F("hPa"));
     }
-    if (bhFound) {
+    if (enLux && bhFound) {
       snprintf_P(topic, 127, PSTR("%s/illuminance"), mqttDeviceTopic);
       createMqttSensor(F("Illuminance"), topic, F("illuminance"), F("lx"));
     }
-    if (showDerived) {
-      const __FlashStringHelper *tu = tempUnit == 1 ? F("°F") : F("°C");
-      if (htuFound) {
-        snprintf_P(topic, 127, PSTR("%s/absolute_humidity"), mqttDeviceTopic);
-        createMqttSensor(F("Absolute Humidity"), topic, F(""), F("g/m³"));
-        snprintf_P(topic, 127, PSTR("%s/dew_point"), mqttDeviceTopic);
-        createMqttSensor(F("Dew Point"), topic, F("temperature"), tu);
-        snprintf_P(topic, 127, PSTR("%s/heat_index"), mqttDeviceTopic);
-        createMqttSensor(F("Heat Index"), topic, F("temperature"), tu);
-      }
-      if (bmpFound) {
-        snprintf_P(topic, 127, PSTR("%s/sea_level_pressure"), mqttDeviceTopic);
-        createMqttSensor(F("Sea-Level Pressure"), topic, F("pressure"), F("hPa"));
-        snprintf_P(topic, 127, PSTR("%s/altitude"), mqttDeviceTopic);
-        createMqttSensor(F("Altitude"), topic, F("distance"), F("m"));
-      }
+    if (enAbsHum && htuFound) {
+      snprintf_P(topic, 127, PSTR("%s/absolute_humidity"), mqttDeviceTopic);
+      createMqttSensor(F("Absolute Humidity"), topic, F(""), F("g/m³"));
+    }
+    if (enDew && htuFound) {
+      snprintf_P(topic, 127, PSTR("%s/dew_point"), mqttDeviceTopic);
+      createMqttSensor(F("Dew Point"), topic, F("temperature"), tu);
+    }
+    if (enHeat && htuFound) {
+      snprintf_P(topic, 127, PSTR("%s/heat_index"), mqttDeviceTopic);
+      createMqttSensor(F("Heat Index"), topic, F("temperature"), tu);
+    }
+    if (enSLP && bmpFound) {
+      snprintf_P(topic, 127, PSTR("%s/sea_level_pressure"), mqttDeviceTopic);
+      createMqttSensor(F("Sea-Level Pressure"), topic, F("pressure"), F("hPa"));
+    }
+    if (enAlt && bmpFound) {
+      snprintf_P(topic, 127, PSTR("%s/altitude"), mqttDeviceTopic);
+      createMqttSensor(F("Altitude"), topic, F("distance"), F("m"));
     }
   }
 #endif
@@ -417,39 +421,44 @@ public:
 
     // Each reading is prefixed with "Sensor " so the entries group together on the
     // Info page and can be picked out by the live readings table on the settings page.
+    // Every reading can be turned off individually (Readings settings sub-section).
     // Temperature (HTU21D preferred, BMP180 fallback) — both °C and °F.
-    if (!htuFound && !bmpFound) user.createNestedArray(F("Sensor Temperature")).add(F("Not Found"));
-    else addTempInfo(user, F("Sensor Temperature"), curTempC);
+    if (enTemp) {
+      if (!htuFound && !bmpFound) user.createNestedArray(F("Sensor Temperature")).add(F("Not Found"));
+      else addTempInfo(user, F("Sensor Temperature"), curTempC);
+    }
     // Humidity (HTU21D)
-    {
+    if (enHum) {
       JsonArray j = user.createNestedArray(F("Sensor Humidity"));
       if (!htuFound) j.add(F("Not Found"));
       else if (isnan(curHum)) j.add(F("-"));
       else { j.add(roundDec(curHum)); j.add(F("%")); }
     }
     // Derived from temperature + humidity (HTU21D)
-    if (showDerived && htuFound) {
+    if (enAbsHum && htuFound) {
       JsonArray j = user.createNestedArray(F("Sensor Absolute Humidity"));
       if (isnan(curAbsHum)) j.add(F("-")); else { j.add(roundDec(curAbsHum)); j.add(F("g/m³")); }
-      addTempInfo(user, F("Sensor Dew Point"), curDewC);
-      addTempInfo(user, F("Sensor Heat Index"), curHeatC);
     }
+    if (enDew  && htuFound) addTempInfo(user, F("Sensor Dew Point"), curDewC);
+    if (enHeat && htuFound) addTempInfo(user, F("Sensor Heat Index"), curHeatC);
     // Pressure (BMP180)
-    {
+    if (enPress) {
       JsonArray j = user.createNestedArray(F("Sensor Pressure"));
       if (!bmpFound) j.add(F("Not Found"));
       else if (isnan(curPressure)) j.add(F("-"));
       else { j.add(roundDec(curPressure)); j.add(F("hPa")); }
     }
     // Derived from pressure (BMP180)
-    if (showDerived && bmpFound) {
-      { JsonArray j = user.createNestedArray(F("Sensor Sea-Level Pressure"));
-        if (isnan(curSeaLevel)) j.add(F("-")); else { j.add(roundDec(curSeaLevel)); j.add(F("hPa")); } }
-      { JsonArray j = user.createNestedArray(F("Sensor Altitude"));
-        if (isnan(curAltitude)) j.add(F("-")); else { j.add(roundDec(curAltitude)); j.add(F("m")); } }
+    if (enSLP && bmpFound) {
+      JsonArray j = user.createNestedArray(F("Sensor Sea-Level Pressure"));
+      if (isnan(curSeaLevel)) j.add(F("-")); else { j.add(roundDec(curSeaLevel)); j.add(F("hPa")); }
+    }
+    if (enAlt && bmpFound) {
+      JsonArray j = user.createNestedArray(F("Sensor Altitude"));
+      if (isnan(curAltitude)) j.add(F("-")); else { j.add(roundDec(curAltitude)); j.add(F("m")); }
     }
     // Illuminance (BH1750)
-    {
+    if (enLux) {
       JsonArray j = user.createNestedArray(F("Sensor Illuminance"));
       if (!bhFound) j.add(F("Not Found"));
       else if (curLux < 0) j.add(F("-"));
@@ -499,7 +508,6 @@ public:
     oappend(F("addInfo('Sensors I2C:Sensors:Read Interval',1,'sec');"));
     oappend(F("addInfo('Sensors I2C:Sensors:Decimals',1,'(0-3)');"));
     oappend(F("addInfo('Sensors I2C:Sensors:Station Altitude',1,'m (for sea-level pressure)');"));
-    oappend(F("addInfo('Sensors I2C:Sensors:Show Derived Values',1,'abs. humidity, dew point, heat index, sea-level pressure, altitude');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Smoothing',1,'% (0=off)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Update Interval',1,'sec');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Reset Offset',1,'clears manual offset');"));
@@ -537,7 +545,7 @@ public:
     oappend(F("function row(k,v,hd){var tr=d.createElement('tr');tr.appendChild(C(hd?'th':'td',k,0,hd));tr.appendChild(C(hd?'th':'td',v,1,hd));T.appendChild(tr);}"));
     oappend(F("function refresh(){T.innerHTML='';row('Reading','Value',1);fetch('/json/info').then(function(r){return r.json();}).then(function(j){var u=(j&&j.u)||{},any=0;Object.keys(u).forEach(function(k){if(k.indexOf('Sensor ')!==0)return;any=1;var v=u[k];row(k.replace(/^Sensor /,''),Array.isArray(v)?v.filter(function(x){return x!==''&&x!=null;}).join(' '):(''+v));});if(!any)row('(no readings)','');}).catch(function(){row('(fetch failed)','');});}"));
     oappend(F("var hr=d.createElement('hr');hr.className='sml';"));
-    oappend(F("var p=d.createElement('p'),u2=d.createElement('u');u2.textContent='Readings';p.appendChild(u2);"));
+    oappend(F("var p=d.createElement('p'),u2=d.createElement('u');u2.textContent='Live Readings';p.appendChild(u2);"));
     oappend(F("var btn=d.createElement('button');btn.type='button';btn.className='btn sml';btn.textContent='\\u21bb Refresh';btn.addEventListener('click',refresh);"));
     oappend(F("var bw=d.createElement('div');bw.appendChild(btn);"));
     oappend(F("var an=sec.querySelector('hr.sml');function ins(n){if(an)sec.insertBefore(n,an);else sec.appendChild(n);}"));
@@ -555,9 +563,19 @@ public:
     s[F("Decimals")] = decimals;
     s[F("BH1750 Address")] = bhAddress;
     s[F("Station Altitude")] = stationAltitude;
-    s[F("Show Derived Values")] = showDerived;
     s[F("Publish Changes Only")] = publishChangesOnly;
     s[F("Home Assistant Discovery")] = haDiscovery;
+
+    JsonObject r = top.createNestedObject(FPSTR(_grpReadings));
+    r[F("Temperature")] = enTemp;
+    r[F("Humidity")] = enHum;
+    r[F("Absolute Humidity")] = enAbsHum;
+    r[F("Dew Point")] = enDew;
+    r[F("Heat Index")] = enHeat;
+    r[F("Pressure")] = enPress;
+    r[F("Sea-Level Pressure")] = enSLP;
+    r[F("Altitude")] = enAlt;
+    r[F("Illuminance")] = enLux;
 
     JsonObject a = top.createNestedObject(FPSTR(_grpAutoBri));
     a[F("Enabled")] = autoBriEnabled;
@@ -587,9 +605,19 @@ public:
     configComplete &= getJsonValue(s[F("Decimals")], decimals, 1);
     configComplete &= getJsonValue(s[F("BH1750 Address")], bhAddress, 0x23);
     configComplete &= getJsonValue(s[F("Station Altitude")], stationAltitude, 0);
-    configComplete &= getJsonValue(s[F("Show Derived Values")], showDerived, true);
     configComplete &= getJsonValue(s[F("Publish Changes Only")], publishChangesOnly, true);
     configComplete &= getJsonValue(s[F("Home Assistant Discovery")], haDiscovery, false);
+
+    JsonObject r = top[FPSTR(_grpReadings)];
+    configComplete &= getJsonValue(r[F("Temperature")], enTemp, true);
+    configComplete &= getJsonValue(r[F("Humidity")], enHum, true);
+    configComplete &= getJsonValue(r[F("Absolute Humidity")], enAbsHum, true);
+    configComplete &= getJsonValue(r[F("Dew Point")], enDew, true);
+    configComplete &= getJsonValue(r[F("Heat Index")], enHeat, true);
+    configComplete &= getJsonValue(r[F("Pressure")], enPress, true);
+    configComplete &= getJsonValue(r[F("Sea-Level Pressure")], enSLP, true);
+    configComplete &= getJsonValue(r[F("Altitude")], enAlt, true);
+    configComplete &= getJsonValue(r[F("Illuminance")], enLux, true);
 
     JsonObject a = top[FPSTR(_grpAutoBri)];
     configComplete &= getJsonValue(a[F("Enabled")], autoBriEnabled, false);
@@ -649,6 +677,7 @@ public:
 const char UsermodSensorsI2C::_name[]       PROGMEM = "Sensors I2C";
 const char UsermodSensorsI2C::_enabled[]    PROGMEM = "Enabled";
 const char UsermodSensorsI2C::_grpSensors[] PROGMEM = "Sensors";
+const char UsermodSensorsI2C::_grpReadings[] PROGMEM = "Readings";
 const char UsermodSensorsI2C::_grpAutoBri[] PROGMEM = "Auto Brightness";
 const char UsermodSensorsI2C::_stateKey[]   PROGMEM = "SensorsI2C";
 
