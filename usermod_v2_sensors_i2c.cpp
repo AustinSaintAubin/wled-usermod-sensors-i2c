@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.4"   // keep in sync with library.json
+#define SENSORS_I2C_VERSION "1.0.5"   // keep in sync with library.json
 
 class UsermodSensorsI2C : public Usermod
 {
@@ -551,6 +551,24 @@ public:
     oappend(F("var an=sec.querySelector('hr.sml');function ins(n){if(an)sec.insertBefore(n,an);else sec.appendChild(n);}"));
     oappend(F("ins(hr);ins(p);ins(T);ins(bw);"));
     oappend(F("refresh();}catch(e){}})();"));
+
+    // Arrange the Readings enable checkboxes into a 2-column table
+    // (Measured | Derived). Moves the existing checkbox+label nodes into cells
+    // (names/values preserved); guarded so it no-ops if the DOM changes.
+    oappend(F("(function(){try{var P='Sensors I2C:Readings:';"));
+    oappend(F("function get(n){var a=d.getElementsByName(P+n);return a.length?a[a.length-1]:null;}"));
+    oappend(F("function cap(e){var h=null,p=e.previousSibling;while(p&&p.nodeType!=1)p=p.previousSibling;if(p&&p.tagName=='INPUT'&&p.type=='hidden')h=p;var s=h||e,l='',n=s.previousSibling;while(n&&n.nodeType==3){l=n.textContent+l;var x=n;n=n.previousSibling;x.remove();}var m=e.nextSibling;while(m){var q=m.nextSibling,b=(m.nodeType==1&&m.tagName=='BR');m.remove();if(b)break;m=q;}return{cb:e,hid:h,label:l.trim()};}"));
+    oappend(F("var L=['Temperature','Humidity','Pressure','Illuminance'],R=['Absolute Humidity','Dew Point','Heat Index','Sea-Level Pressure','Altitude'];"));
+    oappend(F("var all=L.concat(R),E={},ok=1;all.forEach(function(n){var e=get(n);if(!e)ok=0;else E[n]=e;});if(!ok)return;"));
+    oappend(F("var pa=E['Temperature'].parentNode,K={};all.forEach(function(n){K[n]=cap(E[n]);});"));
+    oappend(F("var ref=K['Temperature'].hid||K['Temperature'].cb;"));
+    oappend(F("function C(t,x,hd){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='1px 10px';c.style.textAlign='left';if(hd){c.style.textAlign='center';c.style.borderBottom='1px solid #666';}return c;}"));
+    oappend(F("var T=d.createElement('table');T.style.borderCollapse='collapse';T.style.margin='4px auto 2px';"));
+    oappend(F("var h=d.createElement('tr');h.appendChild(C('th','Measured',1));h.appendChild(C('th','Derived',1));T.appendChild(h);"));
+    oappend(F("function put(c,n){if(!n)return;var k=K[n];if(k.hid)c.appendChild(k.hid);c.appendChild(k.cb);var s=d.createElement('span');s.textContent=' '+k.label;c.appendChild(s);}"));
+    oappend(F("var rows=Math.max(L.length,R.length);for(var i=0;i<rows;i++){var tr=d.createElement('tr'),c1=C('td'),c2=C('td');put(c1,L[i]);put(c2,R[i]);tr.appendChild(c1);tr.appendChild(c2);T.appendChild(tr);}"));
+    oappend(F("pa.insertBefore(T,ref);"));
+    oappend(F("}catch(e){}})();"));
   }
 
   void addToConfig(JsonObject &root) {
