@@ -83,8 +83,9 @@ flags) — copy it to the WLED repo root as `platformio_override.ini` and adjust
 ## Settings (Config → Usermods → "Sensors I2C")
 
 The top of the section shows a **live readings table** (Temperature / Humidity / Pressure /
-Illuminance / Auto-Brightness) with a **↻ Refresh readings** button that re-fetches current
-values from `/json/info` — so you can check the sensors without leaving the settings page.
+Illuminance / Auto-Brightness) with a **↻ Refresh** button that takes a **fresh sensor
+reading** (via the JSON `read` command below) and re-fetches the values from `/json/info` —
+so you can check the sensors without leaving the settings page.
 
 **Sensors**
 
@@ -177,6 +178,7 @@ is also processed when a **preset is applied**. Create a preset of type
 { "SensorsI2C": { "resetOffset": true } }                // clear the manual offset
 { "SensorsI2C": { "autoBri": true, "resetOffset": true } }// both at once
 { "SensorsI2C": { "autoBri": false } }                   // hand brightness back to manual
+{ "SensorsI2C": { "read": true } }                       // take a fresh sensor reading now
 ```
 
 This makes it easy to bind a button / schedule / scene to "return to automatic

@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.6"   // keep in sync with library.json (CI-checked)
+#define SENSORS_I2C_VERSION "1.0.7"   // keep in sync with library.json (CI-checked)
 
 #define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
 #define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
@@ -85,6 +85,7 @@ private:
 
   unsigned long lastReadTime = 0;
   unsigned long lastBriTime  = 0;
+  bool readRequested = false;    // JSON "read" command -> fresh sample on next loop()
 
   // ------- auto-brightness runtime -------
   float   briSmoothed   = NAN;   // EMA state (mapped brightness, before offset)
@@ -394,7 +395,8 @@ public:
     if (!enabled || strip.isUpdating()) return;
     unsigned long now = millis();
 
-    if (now - lastReadTime >= (unsigned long)readInterval * 1000) {
+    if (readRequested || now - lastReadTime >= (unsigned long)readInterval * 1000) {
+      readRequested = false;
       lastReadTime = now;
       readSensors();
     }
@@ -524,6 +526,7 @@ public:
     bool b;
     if (getJsonValue(um[F("autoBri")], b)) autoBriEnabled = b;
     if (getJsonValue(um[F("resetOffset")], b) && b) userBriOffset = 0;
+    if (getJsonValue(um[F("read")], b) && b) readRequested = true; // I2C happens in loop(), not here
   }
 
   void appendConfigData() {
@@ -577,7 +580,8 @@ public:
     oappend(F("function refresh(){T.innerHTML='';row('Reading','Value',1);fetch('/json/info').then(function(r){return r.json();}).then(function(j){var u=(j&&j.u)||{},any=0;Object.keys(u).forEach(function(k){if(k.indexOf('Sensor ')!==0)return;any=1;var v=u[k];row(k.replace(/^Sensor /,''),Array.isArray(v)?v.filter(function(x){return x!==''&&x!=null;}).join(' '):(''+v));});if(!any)row('(no readings)','');}).catch(function(){row('(fetch failed)','');});}"));
     oappend(F("var hr=d.createElement('hr');hr.className='sml';"));
     oappend(F("var p=d.createElement('p'),u2=d.createElement('u');u2.textContent='Live Readings';p.appendChild(u2);"));
-    oappend(F("var btn=d.createElement('button');btn.type='button';btn.className='btn sml';btn.textContent='\\u21bb Refresh';btn.addEventListener('click',refresh);"));
+    oappend(F("function reread(){fetch('/json/state',{method:'POST',headers:{'Content-Type':'application/json'},body:'{\"SensorsI2C\":{\"read\":true}}'}).then(function(){setTimeout(refresh,400);}).catch(function(){refresh();});}"));
+    oappend(F("var btn=d.createElement('button');btn.type='button';btn.className='btn sml';btn.textContent='\\u21bb Refresh';btn.addEventListener('click',reread);"));
     oappend(F("var bw=d.createElement('div');bw.appendChild(btn);"));
     oappend(F("var an=sec.querySelector('hr.sml');function ins(n){if(an)sec.insertBefore(n,an);else sec.appendChild(n);}"));
     oappend(F("ins(hr);ins(p);ins(T);ins(bw);"));
