@@ -692,6 +692,11 @@ public:
 
     if (resetOffset) { userBriOffset = 0; resetOffset = false; }
 
+    // I2C is a hard requirement: never let a saved "Enabled" re-arm the mod while
+    // the global I2C pins are unconfigured (setup() disables it for the same reason;
+    // WLED parses the hw section before usermod config, so the pins are current here)
+    if (i2c_sda < 0 || i2c_scl < 0) enabled = false;
+
     if (initDone) {
       // re-probe in case wiring/addresses changed and reset smoothing state
       initSensors();
