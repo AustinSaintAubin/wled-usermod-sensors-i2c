@@ -95,7 +95,7 @@ values from `/json/info` — so you can check the sensors without leaving the se
 | Decimals                   | 1       | Rounding for temp / humidity / pressure (0–3) |
 | BH1750 Address             | 0x23    | Light-sensor I²C address (`0x23`, or `0x5C` if its ADDR pin is high) |
 | Station Altitude           | 0 m     | Your altitude above sea level, used for sea-level pressure |
-| Publish Changes Only       | on      | Only publish a value over MQTT when it changes |
+| Publish Changes Only       | on      | Only publish a value over MQTT when it changes (a full refresh still goes out every 5 min so Home Assistant entities never expire) |
 | Home Assistant Discovery   | off     | Publish HA MQTT discovery configs |
 
 **Readings** — a checkbox per reading (all **on** by default) to individually show/publish or
@@ -131,6 +131,10 @@ global brightness via `stateUpdated(CALL_MODE_NO_NOTIFY)`. This keeps the active
 preset / effect / colors intact — only overall brightness changes — and does not
 broadcast to sync peers.
 
+Turning the LEDs **off** pauses auto-brightness (it will never switch them back on);
+control resumes automatically the next time you turn them on. Nightlight fades are
+likewise left alone.
+
 ### Manual adjustments (relative offset)
 
 With *Allow Manual Offset* on, if you manually change brightness (UI, app, etc.)
@@ -143,7 +147,7 @@ to your preference. Clear it with *Reset Offset* (or the JSON command below).
 - **Info page / `/json/info`** — readings appear (grouped, each prefixed with `Sensor `) as
   `Sensor Temperature`, `Sensor Humidity`, `Sensor Pressure`, `Sensor Illuminance`, the
   derived `Sensor Absolute Humidity` / `Dew Point` / `Heat Index` / `Sea-Level Pressure` /
-  `Altitude` (when *Show Derived Values* is on), and a `Sensor Auto-Brightness` status line.
+  `Altitude` (each removable via its **Readings** toggle), and a `Sensor Auto-Brightness` status line.
 - **MQTT** — published under your WLED device topic:
 
   ```

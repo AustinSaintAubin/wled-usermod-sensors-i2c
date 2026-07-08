@@ -23,7 +23,11 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.5"   // keep in sync with library.json
+#define SENSORS_I2C_VERSION "1.0.6"   // keep in sync with library.json (CI-checked)
+
+#define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
+#define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
+#define SENSORS_I2C_HA_EXPIRE_AFTER_S 1800      // HA marks entity unavailable after this
 
 class UsermodSensorsI2C : public Usermod
 {
@@ -60,7 +64,7 @@ private:
   Adafruit_HTU21DF          htu = Adafruit_HTU21DF();
   Adafruit_BMP085_Unified   bmp = Adafruit_BMP085_Unified(10085);
   bool bhFound = false, htuFound = false, bmpFound = false;
-  uint8_t htuFails = 0, bhFails = 0;   // consecutive read failures -> mark lost + re-probe
+  uint8_t htuFails = 0, bhFails = 0, bmpFails = 0; // consecutive read failures -> mark lost + re-probe
   unsigned long lastProbeTime = 0;     // periodic re-probe of missing sensors
 
   float curTempC   = NAN;   // chosen temperature source, always stored in Celsius
@@ -89,9 +93,11 @@ private:
   uint8_t lastAutoBri   = 0;     // last brightness value we applied
   bool    briBaselineSet = false;// have we applied auto brightness at least once
   bool    applyingAuto  = false; // guards onStateChange against our own writes
+  bool    offPause      = false; // strip turned off -> pause auto-bri until back on
 
+  bool discoveryDirty = true;    // (re)publish/clear HA discovery on next connected loop
 #ifndef WLED_DISABLE_MQTT
-  bool mqttInitialized = false;
+  unsigned long lastForcePublish = 0; // heartbeat timer (SENSORS_I2C_MQTT_HEARTBEAT_MS)
 #endif
 
   // strings to reduce flash usage
@@ -180,18 +186,17 @@ private:
       float p = NAN, t = NAN;
       bmp.getPressure(&p);           // Pa
       bmp.getTemperature(&t);        // °C
-      if (!isnan(p)) curPressure = p / 100.0f; // hPa
-      if (!htuFound && !isnan(t)) curTempC = t; // fall back to BMP180 temperature
-    }
-    if (bhFound) {
-      float lux = lightMeter.readLightLevel();
-      if (lux < 0) {
-        if (++bhFails >= 3) bhFound = false;
+      // a BMP180 that drops off the bus yields garbage (not NAN); accept only a
+      // plausible atmospheric pressure and mark the sensor lost after repeated bad reads
+      if (!isnan(p) && p >= 30000.0f && p <= 110000.0f) {
+        bmpFails = 0;
+        curPressure = p / 100.0f;    // hPa
+        if (!htuFound && !isnan(t)) curTempC = t; // fall back to BMP180 temperature
       } else {
-        bhFails = 0;
-        curLux = lux;
+        if (++bmpFails >= 3) bmpFound = false; // lost -> periodic re-probe recovers it
       }
     }
+    readLux();
 
     computeDerived();
 
@@ -200,15 +205,27 @@ private:
 #endif
   }
 
-  void updateAutoBrightness() {
-    if (!bhFound) return;
+  // Single lux read path shared by readSensors() and auto-brightness so both
+  // feed the same failure counter / dropout recovery. True when curLux is fresh.
+  bool readLux() {
+    if (!bhFound) return false;
     float lux = lightMeter.readLightLevel();
-    if (lux < 0) return;             // read error / not ready
+    if (lux < 0) {                   // read error / not ready
+      if (++bhFails >= 3) bhFound = false; // lost -> periodic re-probe recovers it
+      return false;
+    }
+    bhFails = 0;
     curLux = lux;
+    return true;
+  }
+
+  void updateAutoBrightness() {
+    if (bri == 0 || nightlightActive) return; // paused while off / during nightlight
+    if (!readLux()) return;
 
     uint16_t lMin = max((uint16_t)1, luxMin);          // keep log valid
     uint16_t lMax = max((uint16_t)(lMin + 1), luxMax); // ensure range
-    float lx = constrain(lux, (float)lMin, (float)lMax);
+    float lx = constrain(curLux, (float)lMin, (float)lMax);
 
     float target = mapf(log10f(lx), log10f((float)lMin), log10f((float)lMax),
                         (float)briMin, (float)briMax);
@@ -237,57 +254,67 @@ private:
   void publishMqtt(const char *topic, const String &value) {
     if (!WLED_MQTT_CONNECTED) return;
     char buf[128];
-    snprintf_P(buf, 127, PSTR("%s/%s"), mqttDeviceTopic, topic);
+    snprintf_P(buf, sizeof(buf), PSTR("%s/%s"), mqttDeviceTopic, topic);
     mqtt->publish(buf, 0, false, value.c_str());
   }
 
   void publishSensors() {
     if (!WLED_MQTT_CONNECTED) return;
+    // heartbeat: republish everything periodically even with "Publish Changes Only"
+    // so HA's expire_after window never lapses while values are stable
+    bool force = !publishChangesOnly;
+    if (millis() - lastForcePublish >= SENSORS_I2C_MQTT_HEARTBEAT_MS) force = true;
+    if (force) lastForcePublish = millis();
+
     if (enTemp && (htuFound || bmpFound)) {
       float t = roundDec(curTempC);
-      if (!isnan(t) && (!publishChangesOnly || t != lastTempC)) {
+      if (!isnan(t) && (force || t != lastTempC)) {
         publishMqtt("temperature", String(toDisplayTemp(curTempC), (unsigned)decimals));
         lastTempC = t;
       }
     }
     if (enHum && htuFound) {
       float h = roundDec(curHum);
-      if (!isnan(h) && (!publishChangesOnly || h != lastHum)) {
+      if (!isnan(h) && (force || h != lastHum)) {
         publishMqtt("humidity", String(curHum, (unsigned)decimals));
         lastHum = h;
       }
     }
     if (enPress && bmpFound) {
       float p = roundDec(curPressure);
-      if (!isnan(p) && (!publishChangesOnly || p != lastPressure)) {
+      if (!isnan(p) && (force || p != lastPressure)) {
         publishMqtt("pressure", String(curPressure, (unsigned)decimals));
         lastPressure = p;
       }
     }
-    if (enLux && bhFound) {
-      if (curLux >= 0 && (!publishChangesOnly || curLux != lastLux)) {
-        publishMqtt("illuminance", String(curLux, 1));
-        lastLux = curLux;
+    if (enLux && bhFound && curLux >= 0) {
+      float l = roundDec(curLux);
+      if (force || l != lastLux) {
+        publishMqtt("illuminance", String(curLux, (unsigned)decimals));
+        lastLux = l;
       }
     }
-    if (enAbsHum) publishDerived("absolute_humidity", curAbsHum, lastAbsHum);
-    if (enDew)    publishDerived("dew_point",   toDisplayTemp(curDewC),  lastDewC);
-    if (enHeat)   publishDerived("heat_index",  toDisplayTemp(curHeatC), lastHeatC);
-    if (enSLP)    publishDerived("sea_level_pressure", curSeaLevel, lastSeaLevel);
-    if (enAlt)    publishDerived("altitude",    curAltitude, lastAltitude);
+    if (enAbsHum) publishDerived("absolute_humidity", curAbsHum, lastAbsHum, force);
+    if (enDew)    publishDerived("dew_point",   toDisplayTemp(curDewC),  lastDewC, force);
+    if (enHeat)   publishDerived("heat_index",  toDisplayTemp(curHeatC), lastHeatC, force);
+    if (enSLP)    publishDerived("sea_level_pressure", curSeaLevel, lastSeaLevel, force);
+    if (enAlt)    publishDerived("altitude",    curAltitude, lastAltitude, force);
   }
 
   // publish one derived value (rounded, change-tracked). `last` is updated in place.
-  void publishDerived(const char *topic, float value, float &last) {
+  void publishDerived(const char *topic, float value, float &last, bool force) {
     if (isnan(value)) return;
     float r = roundDec(value);
-    if (publishChangesOnly && r == last) return;
+    if (!force && r == last) return;
     publishMqtt(topic, String(value, (unsigned)decimals));
     last = r;
   }
 
-  void createMqttSensor(const String &name, const String &topic, const String &deviceClass, const String &unit) {
+  // Publish one HA discovery config (retained), or clear it (empty retained payload)
+  // when the reading is disabled/absent so the stale HA entity actually goes away.
+  void createMqttSensor(const String &name, const String &topic, const String &deviceClass, const String &unit, bool active) {
     String t = String(F("homeassistant/sensor/")) + mqttClientID + F("/") + name + F("/config");
+    if (!active) { mqtt->publish(t.c_str(), 0, true, ""); return; }
 
     StaticJsonDocument<600> doc;
     doc[F("name")] = String(serverDescription) + " " + name;
@@ -295,7 +322,7 @@ private:
     doc[F("unique_id")] = String(mqttClientID) + name;
     if (unit != "") doc[F("unit_of_measurement")] = unit;
     if (deviceClass != "") doc[F("device_class")] = deviceClass;
-    doc[F("expire_after")] = 1800;
+    doc[F("expire_after")] = SENSORS_I2C_HA_EXPIRE_AFTER_S;
 
     JsonObject device = doc.createNestedObject(F("device"));
     device[F("name")] = serverDescription;
@@ -309,45 +336,32 @@ private:
     mqtt->publish(t.c_str(), 0, true, out.c_str());
   }
 
+  // (Re)publish HA discovery for enabled+present readings and clear the retained
+  // config of every other reading (so toggling one off, or disabling HA discovery,
+  // removes the entity). Serviced from loop() via discoveryDirty: MQTT connect,
+  // settings save, or a sensor appearing late / recovering.
   void mqttInitialize() {
     char topic[128];
-    const __FlashStringHelper *tu = tempUnit == 1 ? F("°F") : F("°C");
-    if (enTemp && (htuFound || bmpFound)) {
-      snprintf_P(topic, 127, PSTR("%s/temperature"), mqttDeviceTopic);
-      createMqttSensor(F("Temperature"), topic, F("temperature"), tu);
-    }
-    if (enHum && htuFound) {
-      snprintf_P(topic, 127, PSTR("%s/humidity"), mqttDeviceTopic);
-      createMqttSensor(F("Humidity"), topic, F("humidity"), F("%"));
-    }
-    if (enPress && bmpFound) {
-      snprintf_P(topic, 127, PSTR("%s/pressure"), mqttDeviceTopic);
-      createMqttSensor(F("Pressure"), topic, F("pressure"), F("hPa"));
-    }
-    if (enLux && bhFound) {
-      snprintf_P(topic, 127, PSTR("%s/illuminance"), mqttDeviceTopic);
-      createMqttSensor(F("Illuminance"), topic, F("illuminance"), F("lx"));
-    }
-    if (enAbsHum && htuFound) {
-      snprintf_P(topic, 127, PSTR("%s/absolute_humidity"), mqttDeviceTopic);
-      createMqttSensor(F("Absolute Humidity"), topic, F(""), F("g/m³"));
-    }
-    if (enDew && htuFound) {
-      snprintf_P(topic, 127, PSTR("%s/dew_point"), mqttDeviceTopic);
-      createMqttSensor(F("Dew Point"), topic, F("temperature"), tu);
-    }
-    if (enHeat && htuFound) {
-      snprintf_P(topic, 127, PSTR("%s/heat_index"), mqttDeviceTopic);
-      createMqttSensor(F("Heat Index"), topic, F("temperature"), tu);
-    }
-    if (enSLP && bmpFound) {
-      snprintf_P(topic, 127, PSTR("%s/sea_level_pressure"), mqttDeviceTopic);
-      createMqttSensor(F("Sea-Level Pressure"), topic, F("pressure"), F("hPa"));
-    }
-    if (enAlt && bmpFound) {
-      snprintf_P(topic, 127, PSTR("%s/altitude"), mqttDeviceTopic);
-      createMqttSensor(F("Altitude"), topic, F("distance"), F("m"));
-    }
+    const __FlashStringHelper *tu = tempUnitStr();
+    bool ha = haDiscovery;
+    snprintf_P(topic, sizeof(topic), PSTR("%s/temperature"), mqttDeviceTopic);
+    createMqttSensor(F("Temperature"), topic, F("temperature"), tu, ha && enTemp && (htuFound || bmpFound));
+    snprintf_P(topic, sizeof(topic), PSTR("%s/humidity"), mqttDeviceTopic);
+    createMqttSensor(F("Humidity"), topic, F("humidity"), F("%"), ha && enHum && htuFound);
+    snprintf_P(topic, sizeof(topic), PSTR("%s/pressure"), mqttDeviceTopic);
+    createMqttSensor(F("Pressure"), topic, F("pressure"), F("hPa"), ha && enPress && bmpFound);
+    snprintf_P(topic, sizeof(topic), PSTR("%s/illuminance"), mqttDeviceTopic);
+    createMqttSensor(F("Illuminance"), topic, F("illuminance"), F("lx"), ha && enLux && bhFound);
+    snprintf_P(topic, sizeof(topic), PSTR("%s/absolute_humidity"), mqttDeviceTopic);
+    createMqttSensor(F("Absolute Humidity"), topic, F(""), F("g/m³"), ha && enAbsHum && htuFound);
+    snprintf_P(topic, sizeof(topic), PSTR("%s/dew_point"), mqttDeviceTopic);
+    createMqttSensor(F("Dew Point"), topic, F("temperature"), tu, ha && enDew && htuFound);
+    snprintf_P(topic, sizeof(topic), PSTR("%s/heat_index"), mqttDeviceTopic);
+    createMqttSensor(F("Heat Index"), topic, F("temperature"), tu, ha && enHeat && htuFound);
+    snprintf_P(topic, sizeof(topic), PSTR("%s/sea_level_pressure"), mqttDeviceTopic);
+    createMqttSensor(F("Sea-Level Pressure"), topic, F("pressure"), F("hPa"), ha && enSLP && bmpFound);
+    snprintf_P(topic, sizeof(topic), PSTR("%s/altitude"), mqttDeviceTopic);
+    createMqttSensor(F("Altitude"), topic, F("distance"), F("m"), ha && enAlt && bmpFound);
   }
 #endif
 
@@ -355,16 +369,18 @@ private:
     bhFound  = lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhAddress);
     htuFound = htu.begin();
     bmpFound = bmp.begin();
-    htuFails = bhFails = 0;
+    htuFails = bhFails = bmpFails = 0;
     DEBUG_PRINTF("[%s] BH1750:%d HTU21D:%d BMP180:%d\n", _name, bhFound, htuFound, bmpFound);
   }
 
   // Periodically retry any sensor not currently present (boot ordering, recovery
   // after a dropout, or a wiring fix) without disturbing the ones that work.
   void probeMissing() {
-    if (!bhFound  && lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhAddress)) { bhFound = true; bhFails = 0; }
-    if (!htuFound && htu.begin()) { htuFound = true; htuFails = 0; }
-    if (!bmpFound && bmp.begin())   bmpFound = true;
+    bool recovered = false;
+    if (!bhFound  && lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, bhAddress)) { bhFound = true; bhFails = 0; recovered = true; }
+    if (!htuFound && htu.begin()) { htuFound = true; htuFails = 0; recovered = true; }
+    if (!bmpFound && bmp.begin()) { bmpFound = true; bmpFails = 0; recovered = true; }
+    if (recovered) discoveryDirty = true; // late/recovered sensor -> refresh HA discovery
   }
 
 public:
@@ -388,17 +404,32 @@ public:
       updateAutoBrightness();
     }
 
-    // recover any sensor that isn't currently present (every 30 s)
-    if ((!bhFound || !htuFound || !bmpFound) && now - lastProbeTime >= 30000) {
+    // recover any sensor that isn't currently present
+    if ((!bhFound || !htuFound || !bmpFound) && now - lastProbeTime >= SENSORS_I2C_PROBE_INTERVAL_MS) {
       lastProbeTime = now;
       probeMissing();
     }
+
+#ifndef WLED_DISABLE_MQTT
+    // (re)publish/clear HA discovery after connect, settings save, or sensor recovery
+    if (discoveryDirty && WLED_MQTT_CONNECTED) {
+      discoveryDirty = false;
+      mqttInitialize();
+    }
+#endif
   }
 
   // capture manual brightness changes as a relative offset
   void onStateChange(uint8_t mode) {
     if (!enabled || !autoBriEnabled) return;
     if (applyingAuto) { applyingAuto = false; return; } // our own write
+    if (bri == 0) { offPause = true; return; }          // powered off: pause, not a manual offset
+    if (offPause) {                                     // powered back on: resume auto control;
+      offPause = false;                                 // the restored brightness isn't manual
+      lastAutoBri = bri;
+      return;
+    }
+    if (mode == CALL_MODE_NIGHTLIGHT) return;           // nightlight fade is not a manual change
     if (!briBaselineSet || bri == lastAutoBri) return;  // not a brightness change we care about
     if (allowManualOffset && lastTargetNoOffset >= 0) {
       userBriOffset = constrain((int)bri - lastTargetNoOffset, -255, 255);
@@ -462,7 +493,7 @@ public:
       JsonArray j = user.createNestedArray(F("Sensor Illuminance"));
       if (!bhFound) j.add(F("Not Found"));
       else if (curLux < 0) j.add(F("-"));
-      else { j.add(roundf(curLux * 10) / 10); j.add(F("lx")); }
+      else { j.add(roundDec(curLux)); j.add(F("lx")); }
     }
     // Auto-brightness status: applied brightness (/255), the lux-mapped target,
     // and the current manual offset. The second array element is always non-empty
@@ -665,20 +696,15 @@ public:
       // re-probe in case wiring/addresses changed and reset smoothing state
       initSensors();
       briSmoothed = NAN;
-#ifndef WLED_DISABLE_MQTT
-      mqttInitialized = false;
-#endif
+      discoveryDirty = true; // re-publish/clear HA discovery with the new settings
     }
     return configComplete;
   }
 
 #ifndef WLED_DISABLE_MQTT
   void onMqttConnect(bool sessionPresent) {
-    if (!enabled || !WLED_MQTT_CONNECTED) return;
-    if (haDiscovery && !mqttInitialized) {
-      mqttInitialize();
-      mqttInitialized = true;
-    }
+    if (!enabled) return;
+    discoveryDirty = true; // serviced from loop() while connected
   }
 #endif
 
@@ -687,7 +713,7 @@ public:
   inline float getTemperatureF() { return roundDec(curTempC * 1.8f + 32.0f); }
   inline float getHumidity()     { return roundDec(curHum); }
   inline float getPressure()     { return roundDec(curPressure); }
-  inline float getLux()          { return curLux; }
+  inline float getLux()          { return (curLux < 0) ? NAN : curLux; } // NAN = no reading (like the other getters)
 
   uint16_t getId() { return USERMOD_ID_SENSORS_I2C; }
 };

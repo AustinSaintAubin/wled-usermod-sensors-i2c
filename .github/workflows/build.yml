@@ -17,6 +17,9 @@ jobs:
       matrix:
         # Build against WLED main (catches drift) — add release branches/tags here.
         wled_ref: [main]
+        # default = MQTT on; no_mqtt exercises the WLED_DISABLE_MQTT code path,
+        # which is conditionally compiled and would otherwise never be built.
+        variant: [default, no_mqtt]
     steps:
       - name: Checkout usermod
         uses: actions/checkout@v4
@@ -24,6 +27,13 @@ jobs:
           # Folder name must match the library.json name so PlatformIO registers it
           # as "wled-usermod-sensors-i2c" (recognized via the wled- prefix).
           path: wled-usermod-sensors-i2c
+
+      - name: Check version sync (.cpp vs library.json)
+        run: |
+          cpp_ver=$(grep -oP '#define SENSORS_I2C_VERSION "\K[^"]+' wled-usermod-sensors-i2c/usermod_v2_sensors_i2c.cpp)
+          json_ver=$(python3 -c "import json; print(json.load(open('wled-usermod-sensors-i2c/library.json'))['version'])")
+          echo "cpp=$cpp_ver library.json=$json_ver"
+          test "$cpp_ver" = "$json_ver"
 
       - name: Checkout WLED (${{ matrix.wled_ref }})
         uses: actions/checkout@v4
@@ -57,7 +67,7 @@ jobs:
           build_flags = ${common.build_flags} ${esp32_idf_V4.build_flags}
             -DARDUINO_USB_CDC_ON_BOOT=0
             -D I2CSDAPIN=21
-            -D I2CSCLPIN=22
+            -D I2CSCLPIN=22 ${{ matrix.variant == 'no_mqtt' && '-D WLED_DISABLE_MQTT' || '' }}
           EOF
 
       - name: Build
