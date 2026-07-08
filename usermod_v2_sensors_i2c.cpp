@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.7"   // keep in sync with library.json (CI-checked)
+#define SENSORS_I2C_VERSION "1.0.8"   // keep in sync with library.json (CI-checked)
 
 #define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
 #define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
@@ -97,6 +97,7 @@ private:
   bool    offPause      = false; // strip turned off -> pause auto-bri until back on
 
   bool discoveryDirty = true;    // (re)publish/clear HA discovery on next connected loop
+  bool autoBriPubDirty = true;   // publish auto-brightness switch state on next connected loop
 #ifndef WLED_DISABLE_MQTT
   unsigned long lastForcePublish = 0; // heartbeat timer (SENSORS_I2C_MQTT_HEARTBEAT_MS)
 #endif
@@ -311,19 +312,12 @@ private:
     last = r;
   }
 
-  // Publish one HA discovery config (retained), or clear it (empty retained payload)
-  // when the reading is disabled/absent so the stale HA entity actually goes away.
-  void createMqttSensor(const String &name, const String &topic, const String &deviceClass, const String &unit, bool active) {
-    String t = String(F("homeassistant/sensor/")) + mqttClientID + F("/") + name + F("/config");
-    if (!active) { mqtt->publish(t.c_str(), 0, true, ""); return; }
-
-    StaticJsonDocument<600> doc;
-    doc[F("name")] = String(serverDescription) + " " + name;
-    doc[F("state_topic")] = topic;
-    doc[F("unique_id")] = String(mqttClientID) + name;
-    if (unit != "") doc[F("unit_of_measurement")] = unit;
-    if (deviceClass != "") doc[F("device_class")] = deviceClass;
-    doc[F("expire_after")] = SENSORS_I2C_HA_EXPIRE_AFTER_S;
+  // shared discovery fragments: availability via WLED's MQTT LWT (<topic>/status
+  // carries retained "online"/"offline") + the common device info block
+  void addDiscoveryCommon(StaticJsonDocument<768> &doc) {
+    doc[F("availability_topic")] = String(mqttDeviceTopic) + F("/status");
+    doc[F("payload_available")] = F("online");
+    doc[F("payload_not_available")] = F("offline");
 
     JsonObject device = doc.createNestedObject(F("device"));
     device[F("name")] = serverDescription;
@@ -331,10 +325,55 @@ private:
     device[F("manufacturer")] = F(WLED_BRAND);
     device[F("model")] = F(WLED_PRODUCT_NAME);
     device[F("sw_version")] = versionString;
+  }
+
+  // Publish one HA discovery config (retained), or clear it (empty retained payload)
+  // when the reading is disabled/absent so the stale HA entity actually goes away.
+  void createMqttSensor(const String &name, const String &topic, const String &deviceClass, const String &unit, bool active) {
+    String t = String(F("homeassistant/sensor/")) + mqttClientID + F("/") + name + F("/config");
+    if (!active) { mqtt->publish(t.c_str(), 0, true, ""); return; }
+
+    StaticJsonDocument<768> doc;
+    doc[F("name")] = String(serverDescription) + " " + name;
+    doc[F("state_topic")] = topic;
+    doc[F("unique_id")] = String(mqttClientID) + name;
+    if (unit != "") doc[F("unit_of_measurement")] = unit;
+    if (deviceClass != "") doc[F("device_class")] = deviceClass;
+    doc[F("expire_after")] = SENSORS_I2C_HA_EXPIRE_AFTER_S;
+    addDiscoveryCommon(doc);
 
     String out;
     serializeJson(doc, out);
     mqtt->publish(t.c_str(), 0, true, out.c_str());
+  }
+
+  // HA switch for auto-brightness: state on <deviceTopic>/autobri, commands
+  // (ON/OFF) on <deviceTopic>/autobri/set — lets HA toggle ambient control
+  // without hand-written JSON API presets.
+  void createMqttSwitch(const String &name, bool active) {
+    String t = String(F("homeassistant/switch/")) + mqttClientID + F("/") + name + F("/config");
+    if (!active) { mqtt->publish(t.c_str(), 0, true, ""); return; }
+
+    StaticJsonDocument<768> doc;
+    doc[F("name")] = String(serverDescription) + " " + name;
+    String st = String(mqttDeviceTopic) + F("/autobri");
+    doc[F("state_topic")] = st;
+    doc[F("command_topic")] = st + F("/set");
+    doc[F("payload_on")] = F("ON");
+    doc[F("payload_off")] = F("OFF");
+    doc[F("unique_id")] = String(mqttClientID) + name;
+    addDiscoveryCommon(doc);
+
+    String out;
+    serializeJson(doc, out);
+    mqtt->publish(t.c_str(), 0, true, out.c_str());
+  }
+
+  void publishAutoBriState() {
+    if (!WLED_MQTT_CONNECTED) return;
+    char buf[128];
+    snprintf_P(buf, sizeof(buf), PSTR("%s/autobri"), mqttDeviceTopic);
+    mqtt->publish(buf, 0, true, autoBriEnabled ? "ON" : "OFF"); // retained so HA restarts see current state
   }
 
   // (Re)publish HA discovery for enabled+present readings and clear the retained
@@ -363,6 +402,7 @@ private:
     createMqttSensor(F("Sea-Level Pressure"), topic, F("pressure"), F("hPa"), ha && enSLP && bmpFound);
     snprintf_P(topic, sizeof(topic), PSTR("%s/altitude"), mqttDeviceTopic);
     createMqttSensor(F("Altitude"), topic, F("distance"), F("m"), ha && enAlt && bmpFound);
+    createMqttSwitch(F("Auto Brightness"), ha && bhFound);
   }
 #endif
 
@@ -416,7 +456,13 @@ public:
     // (re)publish/clear HA discovery after connect, settings save, or sensor recovery
     if (discoveryDirty && WLED_MQTT_CONNECTED) {
       discoveryDirty = false;
+      autoBriPubDirty = true;
       mqttInitialize();
+    }
+    // switch state after connect / MQTT command / JSON command / settings save
+    if (autoBriPubDirty && WLED_MQTT_CONNECTED) {
+      autoBriPubDirty = false;
+      publishAutoBriState();
     }
 #endif
   }
@@ -524,7 +570,7 @@ public:
     JsonObject um = root[FPSTR(_stateKey)];
     if (um.isNull()) return;
     bool b;
-    if (getJsonValue(um[F("autoBri")], b)) autoBriEnabled = b;
+    if (getJsonValue(um[F("autoBri")], b)) { autoBriEnabled = b; autoBriPubDirty = true; }
     if (getJsonValue(um[F("resetOffset")], b) && b) userBriOffset = 0;
     if (getJsonValue(um[F("read")], b) && b) readRequested = true; // I2C happens in loop(), not here
   }
@@ -713,7 +759,20 @@ public:
 #ifndef WLED_DISABLE_MQTT
   void onMqttConnect(bool sessionPresent) {
     if (!enabled) return;
+    char buf[128];
+    snprintf_P(buf, sizeof(buf), PSTR("%s/autobri/set"), mqttDeviceTopic);
+    mqtt->subscribe(buf, 0);
     discoveryDirty = true; // serviced from loop() while connected
+    autoBriPubDirty = true;
+  }
+
+  // handles <deviceTopic>/autobri/set (WLED strips the device-topic prefix)
+  bool onMqttMessage(char* topic, char* payload) {
+    if (strcmp_P(topic, PSTR("/autobri/set")) != 0) return false;
+    if      (!strcasecmp(payload, "ON")  || !strcmp(payload, "1")) autoBriEnabled = true;
+    else if (!strcasecmp(payload, "OFF") || !strcmp(payload, "0")) autoBriEnabled = false;
+    autoBriPubDirty = true; // echo state back (unknown payloads re-assert the truth)
+    return true;
   }
 #endif
 

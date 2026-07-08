@@ -161,10 +161,15 @@ to your preference. Clear it with *Reset Offset* (or the JSON command below).
   <mqttDeviceTopic>/heat_index          (derived)
   <mqttDeviceTopic>/sea_level_pressure  (derived)
   <mqttDeviceTopic>/altitude            (derived)
+  <mqttDeviceTopic>/autobri             (auto-brightness state, ON/OFF, retained)
+  <mqttDeviceTopic>/autobri/set         (command topic: ON/OFF or 1/0)
   ```
 
 - **Home Assistant** — with *Home Assistant Discovery* on and MQTT connected, the sensor
-  entities (with proper device classes/units) auto-register under the WLED device.
+  entities (with proper device classes/units) auto-register under the WLED device, plus an
+  **Auto Brightness switch** so ambient control can be toggled straight from HA. All
+  entities use WLED's `/status` LWT as their availability topic, so they show
+  *unavailable* whenever the device itself is offline.
 - **`/json/state`** — exposes `{"SensorsI2C":{"autoBri":<bool>,"offset":<int>}}`.
 
 ## Controlling auto-brightness from a preset / API
