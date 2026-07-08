@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.8"   // keep in sync with library.json (CI-checked)
+#define SENSORS_I2C_VERSION "1.0.9"   // keep in sync with library.json (CI-checked)
 
 #define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
 #define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
@@ -56,6 +56,7 @@ private:
   uint8_t  briMax = 255;         // brightness at/above luxMax
   uint8_t  smoothing = 70;       // EMA smoothing percent (0 = off, higher = smoother)
   uint8_t  briUpdateInterval = 2;// seconds between brightness updates
+  uint16_t offBelowLux = 0;      // turn strip fully off below this lux (0 = never)
   bool     allowManualOffset = true;
   bool     resetOffset = false;  // momentary; cleared on save
 
@@ -94,7 +95,8 @@ private:
   uint8_t lastAutoBri   = 0;     // last brightness value we applied
   bool    briBaselineSet = false;// have we applied auto brightness at least once
   bool    applyingAuto  = false; // guards onStateChange against our own writes
-  bool    offPause      = false; // strip turned off -> pause auto-bri until back on
+  bool    offPause      = false; // strip turned off by user -> pause auto-bri until back on
+  bool    autoOffActive = false; // dark-off engaged (Off Below Lux); keeps monitoring lux
 
   bool discoveryDirty = true;    // (re)publish/clear HA discovery on next connected loop
   bool autoBriPubDirty = true;   // publish auto-brightness switch state on next connected loop
@@ -222,8 +224,29 @@ private:
   }
 
   void updateAutoBrightness() {
-    if (bri == 0 || nightlightActive) return; // paused while off / during nightlight
+    if (nightlightActive) return;             // never fight the nightlight
+    if (bri == 0 && !autoOffActive) return;   // user powered off: paused until back on
     if (!readLux()) return;
+
+    // optional dark-off: below the threshold switch the strip off entirely; back
+    // on with ~25% hysteresis so it doesn't flap at the boundary. While engaged,
+    // a manual power-on is respected (hands off) until the room is bright again.
+    if (offBelowLux > 0) {
+      if (autoOffActive) {
+        if (curLux < offBelowLux * 1.25f + 1.0f) return; // still dark: stay off / hands off
+        autoOffActive = false;                            // bright again: resume control
+        briSmoothed = NAN;                                // jump straight to the mapped target
+      } else if (curLux < (float)offBelowLux) {
+        autoOffActive = true;
+        if (bri > 0) {
+          applyingAuto = true;
+          bri = 0;
+          lastAutoBri = 0;
+          stateUpdated(CALL_MODE_NO_NOTIFY);
+        }
+        return;
+      }
+    }
 
     uint16_t lMin = max((uint16_t)1, luxMin);          // keep log valid
     uint16_t lMax = max((uint16_t)(lMin + 1), luxMax); // ensure range
@@ -471,12 +494,16 @@ public:
   void onStateChange(uint8_t mode) {
     if (!enabled || !autoBriEnabled) return;
     if (applyingAuto) { applyingAuto = false; return; } // our own write
-    if (bri == 0) { offPause = true; return; }          // powered off: pause, not a manual offset
+    if (bri == 0) {                                     // powered off: pause, not a manual offset
+      if (!autoOffActive) offPause = true;              // (during dark-off, darkness governs instead)
+      return;
+    }
     if (offPause) {                                     // powered back on: resume auto control;
       offPause = false;                                 // the restored brightness isn't manual
       lastAutoBri = bri;
       return;
     }
+    if (autoOffActive) { lastAutoBri = bri; return; }   // manual light during dark-off: override, not offset
     if (mode == CALL_MODE_NIGHTLIGHT) return;           // nightlight fade is not a manual change
     if (!briBaselineSet || bri == lastAutoBri) return;  // not a brightness change we care about
     if (allowManualOffset && lastTargetNoOffset >= 0) {
@@ -590,6 +617,7 @@ public:
     oappend(F("addInfo('Sensors I2C:Sensors:Station Altitude',1,'m (for sea-level pressure)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Smoothing',1,'% (0=off)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Update Interval',1,'sec');"));
+    oappend(F("addInfo('Sensors I2C:Auto Brightness:Off Below Lux',1,'lx (0=never; on again at +25%)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Reset Offset',1,'clears manual offset');"));
 
     // Arrange the four Lux/Brightness fields into a 2x2 mapping table
@@ -684,6 +712,7 @@ public:
     a[F("Brightness Max")] = briMax;
     a[F("Smoothing")] = smoothing;
     a[F("Update Interval")] = briUpdateInterval;
+    a[F("Off Below Lux")] = offBelowLux;
     a[F("Allow Manual Offset")] = allowManualOffset;
     a[F("Reset Offset")] = false; // momentary: never persists as checked
   }
@@ -726,6 +755,7 @@ public:
     configComplete &= getJsonValue(a[F("Brightness Max")], briMax, 255);
     configComplete &= getJsonValue(a[F("Smoothing")], smoothing, 70);
     configComplete &= getJsonValue(a[F("Update Interval")], briUpdateInterval, 2);
+    configComplete &= getJsonValue(a[F("Off Below Lux")], offBelowLux, 0);
     configComplete &= getJsonValue(a[F("Allow Manual Offset")], allowManualOffset, true);
     getJsonValue(a[F("Reset Offset")], resetOffset, false);
 
@@ -751,6 +781,7 @@ public:
       // re-probe in case wiring/addresses changed and reset smoothing state
       initSensors();
       briSmoothed = NAN;
+      autoOffActive = false; // re-evaluate dark-off against the new settings
       discoveryDirty = true; // re-publish/clear HA discovery with the new settings
     }
     return configComplete;
