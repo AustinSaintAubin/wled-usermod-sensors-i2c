@@ -115,7 +115,8 @@ and Home Assistant discovery.
 | Max Brightness        | 255     | Brightness at/above Lux Max (0–255) |
 | Smoothing             | 70 %    | Exponential smoothing (0 = instant, higher = smoother) |
 | Update Interval       | 2 s     | How often brightness is recomputed |
-| Off Below Lux         | 0 (off) | Turn the LEDs fully off below this lux (0 = never) |
+| Off When Dark         | off     | Master switch: turn the LEDs fully off in darkness (uses the two lux fields below) |
+| Off Below Lux         | 0       | Lux below which the LEDs switch off |
 | On Above Lux          | 0       | Lux at/above which they turn back on; kept ≥ *Off Below Lux* (set higher for hysteresis) |
 | Allow Manual Offset   | on      | See "Manual adjustments" below |
 | Reset Offset          | —       | Tick + Save once to clear the current manual offset |
@@ -138,9 +139,9 @@ Turning the LEDs **off** pauses auto-brightness (it will never switch them back 
 control resumes automatically the next time you turn them on. Nightlight fades are
 likewise left alone.
 
-With **Off Below Lux** set (> 0), the strip is switched fully off when ambient light
-drops below that threshold — for rooms where even *Min Brightness* would glow — and
-comes back on once lux reaches **On Above Lux**. Set *On Above Lux* higher than
+With **Off When Dark** enabled, the strip is switched fully off when ambient light
+drops below **Off Below Lux** — for rooms where even *Min Brightness* would glow —
+and comes back on once lux reaches **On Above Lux**. Set *On Above Lux* higher than
 *Off Below Lux* to add hysteresis so the lights don't flap around a single boundary
 (equal values give a plain threshold; the pair is auto-corrected so it can never
 invert). Manually turning the lights on while it's dark is respected:
