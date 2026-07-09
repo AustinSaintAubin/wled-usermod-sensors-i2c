@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.9"   // keep in sync with library.json (CI-checked)
+#define SENSORS_I2C_VERSION "1.0.10"  // keep in sync with library.json (CI-checked)
 
 #define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
 #define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
@@ -57,6 +57,7 @@ private:
   uint8_t  smoothing = 70;       // EMA smoothing percent (0 = off, higher = smoother)
   uint8_t  briUpdateInterval = 2;// seconds between brightness updates
   uint16_t offBelowLux = 0;      // turn strip fully off below this lux (0 = never)
+  uint16_t onAboveLux  = 0;      // turn back on at/above this lux (clamped >= offBelowLux)
   bool     allowManualOffset = true;
   bool     resetOffset = false;  // momentary; cleared on save
 
@@ -228,12 +229,13 @@ private:
     if (bri == 0 && !autoOffActive) return;   // user powered off: paused until back on
     if (!readLux()) return;
 
-    // optional dark-off: below the threshold switch the strip off entirely; back
-    // on with ~25% hysteresis so it doesn't flap at the boundary. While engaged,
-    // a manual power-on is respected (hands off) until the room is bright again.
+    // optional dark-off: below "Off Below Lux" switch the strip off entirely; back
+    // on at/above "On Above Lux" (user-set hysteresis; clamped >= off threshold so
+    // the range can't invert). While engaged, a manual power-on is respected
+    // (hands off) until the room is bright again.
     if (offBelowLux > 0) {
       if (autoOffActive) {
-        if (curLux < offBelowLux * 1.25f + 1.0f) return; // still dark: stay off / hands off
+        if (curLux < (float)onAboveLux) return;           // still dark: stay off / hands off
         autoOffActive = false;                            // bright again: resume control
         briSmoothed = NAN;                                // jump straight to the mapped target
       } else if (curLux < (float)offBelowLux) {
@@ -617,7 +619,8 @@ public:
     oappend(F("addInfo('Sensors I2C:Sensors:Station Altitude',1,'m (for sea-level pressure)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Smoothing',1,'% (0=off)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Update Interval',1,'sec');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Off Below Lux',1,'lx (0=never; on again at +25%)');"));
+    oappend(F("addInfo('Sensors I2C:Auto Brightness:Off Below Lux',1,'lx (0=never)');"));
+    oappend(F("addInfo('Sensors I2C:Auto Brightness:On Above Lux',1,'lx (back on; kept >= Off Below Lux)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Reset Offset',1,'clears manual offset');"));
 
     // Arrange the four Lux/Brightness fields into a 2x2 mapping table
@@ -713,6 +716,7 @@ public:
     a[F("Smoothing")] = smoothing;
     a[F("Update Interval")] = briUpdateInterval;
     a[F("Off Below Lux")] = offBelowLux;
+    a[F("On Above Lux")] = onAboveLux;
     a[F("Allow Manual Offset")] = allowManualOffset;
     a[F("Reset Offset")] = false; // momentary: never persists as checked
   }
@@ -756,6 +760,7 @@ public:
     configComplete &= getJsonValue(a[F("Smoothing")], smoothing, 70);
     configComplete &= getJsonValue(a[F("Update Interval")], briUpdateInterval, 2);
     configComplete &= getJsonValue(a[F("Off Below Lux")], offBelowLux, 0);
+    configComplete &= getJsonValue(a[F("On Above Lux")], onAboveLux, 0);
     configComplete &= getJsonValue(a[F("Allow Manual Offset")], allowManualOffset, true);
     getJsonValue(a[F("Reset Offset")], resetOffset, false);
 
@@ -769,6 +774,7 @@ public:
     if (briMax < briMin) { uint8_t t = briMin; briMin = briMax; briMax = t; }
     smoothing = constrain(smoothing, 0, 95);
     briUpdateInterval = constrain(briUpdateInterval, 1, 600);
+    if (onAboveLux < offBelowLux) onAboveLux = offBelowLux; // never invert the dark-off range
 
     if (resetOffset) { userBriOffset = 0; resetOffset = false; }
 
