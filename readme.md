@@ -115,11 +115,16 @@ and Home Assistant discovery.
 | Max Brightness        | 255     | Brightness at/above Lux Max (0–255) |
 | Smoothing             | 70 %    | Exponential smoothing (0 = instant, higher = smoother) |
 | Update Interval       | 2 s     | How often brightness is recomputed |
-| Off When Dark         | off     | Master switch: turn the LEDs fully off in darkness (uses the two lux fields below) |
-| Off Below Lux         | 0       | Lux below which the LEDs switch off |
-| On Above Lux          | 0       | Lux at/above which they turn back on; kept ≥ *Off Below Lux* (set higher for hysteresis) |
 | Allow Manual Offset   | on      | See "Manual adjustments" below |
 | Reset Offset          | —       | Tick + Save once to clear the current manual offset |
+
+**Off When Dark** (own sub-section; the two lux fields render as a small table)
+
+| Setting       | Default | Notes |
+|---------------|---------|-------|
+| Enabled       | off     | Master switch: turn the LEDs fully off in darkness |
+| Off Below Lux | 0       | Lux below which the LEDs switch off |
+| On Above Lux  | 0       | Lux at/above which normal auto-brightness resumes; kept ≥ *Off Below Lux* (set higher for hysteresis) |
 
 ## Auto-brightness behaviour
 
@@ -141,11 +146,18 @@ likewise left alone.
 
 With **Off When Dark** enabled, the strip is switched fully off when ambient light
 drops below **Off Below Lux** — for rooms where even *Min Brightness* would glow —
-and comes back on once lux reaches **On Above Lux**. Set *On Above Lux* higher than
-*Off Below Lux* to add hysteresis so the lights don't flap around a single boundary
-(equal values give a plain threshold; the pair is auto-corrected so it can never
-invert). Manually turning the lights on while it's dark is respected:
-auto-brightness keeps its hands off until the room is bright again.
+and normal control resumes once lux reaches **On Above Lux**. Set *On Above Lux*
+higher than *Off Below Lux* to add hysteresis so the lights don't flap around a
+single boundary (equal values give a plain threshold; the pair is auto-corrected so
+it can never invert).
+
+While it's dark, **darkness wins**: adjusting brightness only updates your manual
+offset and the strip switches back off on the next update. The one exception is
+explicitly turning the lights **on** from the dark-off state — that is honored
+(lights stay on) until the room reaches *On Above Lux*, after which darkness can win
+again. The current state is visible on the info page as `dark-off` /
+`dark-off (overridden)`. Note that normal auto-brightness never dims to 0 on its
+own — only *Off When Dark* switches the strip off.
 
 ### Manual adjustments (relative offset)
 

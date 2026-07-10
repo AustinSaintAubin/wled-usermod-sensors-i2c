@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.11"  // keep in sync with library.json (CI-checked)
+#define SENSORS_I2C_VERSION "1.0.12"  // keep in sync with library.json (CI-checked)
 
 #define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
 #define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
@@ -98,7 +98,8 @@ private:
   bool    briBaselineSet = false;// have we applied auto brightness at least once
   bool    applyingAuto  = false; // guards onStateChange against our own writes
   bool    offPause      = false; // strip turned off by user -> pause auto-bri until back on
-  bool    autoOffActive = false; // dark-off engaged (Off Below Lux); keeps monitoring lux
+  bool    autoOffActive = false; // dark-off engaged (Off When Dark); keeps monitoring lux
+  bool    darkOverride  = false; // user powered ON during dark-off: stay lit until On Above Lux
 
   bool discoveryDirty = true;    // (re)publish/clear HA discovery on next connected loop
   bool autoBriPubDirty = true;   // publish auto-brightness switch state on next connected loop
@@ -112,6 +113,7 @@ private:
   static const char _grpSensors[];
   static const char _grpReadings[];
   static const char _grpAutoBri[];
+  static const char _grpDarkOff[];
   static const char _stateKey[];
 
   // ---- helpers ----
@@ -231,14 +233,29 @@ private:
     if (!readLux()) return;
 
     // optional dark-off ("Off When Dark"): below "Off Below Lux" switch the strip
-    // off entirely; back on at/above "On Above Lux" (user-set hysteresis; clamped
-    // >= off threshold so the range can't invert). While engaged, a manual
-    // power-on is respected (hands off) until the room is bright again.
+    // off entirely; normal control resumes at/above "On Above Lux" (user-set
+    // hysteresis; clamped >= off threshold so the range can't invert).
+    // Darkness wins: a brightness adjustment only updates the manual offset and
+    // the strip switches back off. The one exception is an explicit power-ON from
+    // the dark-off state (darkOverride, latched in onStateChange), which keeps
+    // the light on until the room reaches On Above Lux.
     if (darkOffEnabled) {
       if (autoOffActive) {
-        if (curLux < (float)onAboveLux) return;           // still dark: stay off / hands off
-        autoOffActive = false;                            // bright again: resume control
-        briSmoothed = NAN;                                // jump straight to the mapped target
+        if (curLux >= (float)onAboveLux) {  // bright again: release dark-off (and any
+          autoOffActive = false;            // manual override) and resume control
+          darkOverride = false;
+          briSmoothed = NAN;                // jump straight to the mapped target
+        } else if (darkOverride) {
+          return;                           // lit on purpose while dark: hands off
+        } else {
+          if (bri > 0) {                    // darkness wins: (re)assert off, even
+            applyingAuto = true;            // right after a brightness adjustment
+            bri = 0;
+            lastAutoBri = 0;
+            stateUpdated(CALL_MODE_NO_NOTIFY);
+          }
+          return;
+        }
       } else if (curLux < (float)offBelowLux) {
         autoOffActive = true;
         if (bri > 0) {
@@ -267,7 +284,9 @@ private:
     }
 
     lastTargetNoOffset = (int)roundf(briSmoothed);
-    int finalBri = constrain(lastTargetNoOffset + userBriOffset, 0, 255);
+    // floor at 1: the mapping/offset path must never power the strip off, or the
+    // off would be misread as a user power-off; only dark-off may write bri = 0
+    int finalBri = constrain(lastTargetNoOffset + userBriOffset, 1, 255);
 
     if (!briBaselineSet || abs(finalBri - (int)bri) >= 2) {
       applyingAuto = true;
@@ -497,8 +516,9 @@ public:
   void onStateChange(uint8_t mode) {
     if (!enabled || !autoBriEnabled) return;
     if (applyingAuto) { applyingAuto = false; return; } // our own write
-    if (bri == 0) {                                     // powered off: pause, not a manual offset
-      if (!autoOffActive) offPause = true;              // (during dark-off, darkness governs instead)
+    if (bri == 0) {                                     // powered off: not a manual offset
+      if (autoOffActive) darkOverride = false;          // off again in darkness: re-arm dark-off
+      else offPause = true;                             // normal power-off: pause until back on
       return;
     }
     if (offPause) {                                     // powered back on: resume auto control;
@@ -506,7 +526,11 @@ public:
       lastAutoBri = bri;
       return;
     }
-    if (autoOffActive) { lastAutoBri = bri; return; }   // manual light during dark-off: override, not offset
+    if (autoOffActive && lastAutoBri == 0) {            // powered ON while dark-off holds the strip
+      darkOverride = true;                              // off: deliberate "light despite darkness",
+      lastAutoBri = bri;                                // honored until the room reaches On Above Lux
+      return;
+    }
     if (mode == CALL_MODE_NIGHTLIGHT) return;           // nightlight fade is not a manual change
     if (!briBaselineSet || bri == lastAutoBri) return;  // not a brightness change we care about
     if (allowManualOffset && lastTargetNoOffset >= 0) {
@@ -583,6 +607,7 @@ public:
       String suffix = F(" / 255");
       if (lastTargetNoOffset >= 0) suffix += String(F(", target ")) + lastTargetNoOffset;
       suffix += String(F(", offset ")) + (userBriOffset > 0 ? "+" : "") + userBriOffset;
+      if (autoOffActive) suffix += darkOverride ? F(", dark-off (overridden)") : F(", dark-off");
       j.add(suffix);
     }
   }
@@ -620,9 +645,7 @@ public:
     oappend(F("addInfo('Sensors I2C:Sensors:Station Altitude',1,'m (for sea-level pressure)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Smoothing',1,'% (0=off)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Update Interval',1,'sec');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Off When Dark',1,'turn strip fully off in darkness');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Off Below Lux',1,'lx');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:On Above Lux',1,'lx (back on; kept >= Off Below Lux)');"));
+    oappend(F("addInfo('Sensors I2C:Off When Dark:Enabled',1,'turn strip fully off in darkness');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Reset Offset',1,'clears manual offset');"));
 
     // Arrange the four Lux/Brightness fields into a 2x2 mapping table
@@ -646,6 +669,26 @@ public:
     oappend(F("pa.insertBefore(T,ref);"));
     oappend(F("function mv(n,c){var e=E[n],g=hid(e);e.className='s';if(g)c.appendChild(g);c.appendChild(e);}"));
     oappend(F("mv('Lux Min',a1);mv('Brightness Min',b1);mv('Lux Max',a2);mv('Brightness Max',b2);"));
+    oappend(F("}catch(e){}})();"));
+
+    // Arrange the two Off When Dark lux fields into a small table (rows
+    // Off Below / On Above x one Lux column), same style/guards as the mapping table.
+    oappend(F("(function(){try{var P='Sensors I2C:Off When Dark:';"));
+    oappend(F("function vis(n){var a=d.getElementsByName(P+n);return a.length?a[a.length-1]:null;}"));
+    oappend(F("function hid(e){var p=e.previousSibling;while(p&&p.nodeType!=1)p=p.previousSibling;return(p&&p.tagName=='INPUT'&&p.type=='hidden')?p:null;}"));
+    oappend(F("function strip(e){var s=hid(e)||e,n=s.previousSibling;while(n&&n.nodeType==3){var x=n;n=n.previousSibling;x.remove();}var m=e.nextSibling;while(m){var q=m.nextSibling,b=(m.nodeType==1&&m.tagName=='BR');m.remove();if(b)break;m=q;}}"));
+    oappend(F("var F=['Off Below Lux','On Above Lux'],E={},ok=1;"));
+    oappend(F("F.forEach(function(n){E[n]=vis(n);if(!E[n])ok=0;});if(!ok)return;"));
+    oappend(F("var pa=E['Off Below Lux'].parentNode;F.forEach(function(n){strip(E[n]);});"));
+    oappend(F("var ref=hid(E['Off Below Lux'])||E['Off Below Lux'];"));
+    oappend(F("function C(t,x,hd){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='1px 7px';c.style.textAlign='center';if(hd)c.style.borderBottom='1px solid #666';return c;}"));
+    oappend(F("var T=d.createElement('table');T.style.borderCollapse='collapse';T.style.margin='4px auto 6px';"));
+    oappend(F("var h=d.createElement('tr');h.appendChild(C('th','',1));h.appendChild(C('th','Lux (lx)',1));T.appendChild(h);"));
+    oappend(F("var r1=d.createElement('tr'),a1=C('td');r1.appendChild(C('th','Off Below'));r1.appendChild(a1);T.appendChild(r1);"));
+    oappend(F("var r2=d.createElement('tr'),a2=C('td');r2.appendChild(C('th','On Above'));r2.appendChild(a2);T.appendChild(r2);"));
+    oappend(F("pa.insertBefore(T,ref);"));
+    oappend(F("function mv(n,c){var e=E[n],g=hid(e);e.className='s';if(g)c.appendChild(g);c.appendChild(e);}"));
+    oappend(F("mv('Off Below Lux',a1);mv('On Above Lux',a2);"));
     oappend(F("}catch(e){}})();"));
 
     // "Readings" subsection (matches the Sensors/Auto Brightness sub-headers): a
@@ -717,11 +760,13 @@ public:
     a[F("Brightness Max")] = briMax;
     a[F("Smoothing")] = smoothing;
     a[F("Update Interval")] = briUpdateInterval;
-    a[F("Off When Dark")] = darkOffEnabled;
-    a[F("Off Below Lux")] = offBelowLux;
-    a[F("On Above Lux")] = onAboveLux;
     a[F("Allow Manual Offset")] = allowManualOffset;
     a[F("Reset Offset")] = false; // momentary: never persists as checked
+
+    JsonObject o = top.createNestedObject(FPSTR(_grpDarkOff));
+    o[FPSTR(_enabled)] = darkOffEnabled;
+    o[F("Off Below Lux")] = offBelowLux;
+    o[F("On Above Lux")] = onAboveLux;
   }
 
   bool readFromConfig(JsonObject &root) {
@@ -762,11 +807,13 @@ public:
     configComplete &= getJsonValue(a[F("Brightness Max")], briMax, 255);
     configComplete &= getJsonValue(a[F("Smoothing")], smoothing, 70);
     configComplete &= getJsonValue(a[F("Update Interval")], briUpdateInterval, 2);
-    configComplete &= getJsonValue(a[F("Off When Dark")], darkOffEnabled, false);
-    configComplete &= getJsonValue(a[F("Off Below Lux")], offBelowLux, 0);
-    configComplete &= getJsonValue(a[F("On Above Lux")], onAboveLux, 0);
     configComplete &= getJsonValue(a[F("Allow Manual Offset")], allowManualOffset, true);
     getJsonValue(a[F("Reset Offset")], resetOffset, false);
+
+    JsonObject o = top[FPSTR(_grpDarkOff)];
+    configComplete &= getJsonValue(o[FPSTR(_enabled)], darkOffEnabled, false);
+    configComplete &= getJsonValue(o[F("Off Below Lux")], offBelowLux, 0);
+    configComplete &= getJsonValue(o[F("On Above Lux")], onAboveLux, 0);
 
     // sanity / clamping
     readInterval = constrain(readInterval, 1, 3600);
@@ -791,7 +838,7 @@ public:
       // re-probe in case wiring/addresses changed and reset smoothing state
       initSensors();
       briSmoothed = NAN;
-      autoOffActive = false; // re-evaluate dark-off against the new settings
+      autoOffActive = darkOverride = false; // re-evaluate dark-off against the new settings
       discoveryDirty = true; // re-publish/clear HA discovery with the new settings
     }
     return configComplete;
@@ -832,6 +879,7 @@ const char UsermodSensorsI2C::_enabled[]    PROGMEM = "Enabled";
 const char UsermodSensorsI2C::_grpSensors[] PROGMEM = "Sensors";
 const char UsermodSensorsI2C::_grpReadings[] PROGMEM = "Readings";
 const char UsermodSensorsI2C::_grpAutoBri[] PROGMEM = "Auto Brightness";
+const char UsermodSensorsI2C::_grpDarkOff[] PROGMEM = "Off When Dark";
 const char UsermodSensorsI2C::_stateKey[]   PROGMEM = "SensorsI2C";
 
 static UsermodSensorsI2C sensors_i2c;
