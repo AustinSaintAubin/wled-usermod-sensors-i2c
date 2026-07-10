@@ -1,73 +1,78 @@
-# Bench Test Checklist — v1.0.11
+# Bench Test Checklist — v1.0.12
 
-Hardware validation for everything changed since v1.0.5 (commits `36ebb95`…`60d0e7b`,
-v1.0.6–v1.0.11). All items are compile-verified (CI green, both MQTT variants) but
-**not yet tested on hardware**. After a clean pass: `git tag v1.0.11 && git push origin v1.0.11`.
+Hardware validation for everything changed since v1.0.5. First bench pass ran
+**2026-07-09 on v1.0.11**; it found the offset/dark-off bug fixed in v1.0.12
+(commit `075fa12`), so the dark-off section needs a **re-test on v1.0.12**.
+After a clean pass: `git tag v1.0.12 && git push origin v1.0.12`.
 
-**Setup:** ESP32 + 3-in-1 module flashed with current `main`, MQTT broker + Home Assistant
-reachable for the MQTT section.
-
-> ⚠️ **Config migration note:** dark-off is now gated by the new *Off When Dark* checkbox
-> (default **off**). A pre-1.0.11 config that had *Off Below Lux* set will have dark-off
-> disabled after flashing until the checkbox is ticked.
+> ⚠️ **Re-flash note (v1.0.12):** the Off When Dark settings moved into their own
+> config sub-section, so its three values (Enabled / Off Below Lux / On Above Lux)
+> reset to defaults once — re-enter them after flashing.
 
 ---
 
-## 1. Flash & settings page (~5 min)
+## 1. Flash & settings page — ✅ passed 2026-07-09 (v1.0.11), one re-check
 
-- [ ] *Config → Usermods → Sensors I2C* renders: all three sub-sections, the Lux/Brightness
-      2×2 table and the Readings Measured|Derived table lay out correctly
-      (settings JS was touched in v1.0.7 / v1.0.11)
-- [ ] New Auto Brightness fields present: **Off When Dark** checkbox, **Off Below Lux**,
-      **On Above Lux**
-- [ ] Save with *On Above Lux* < *Off Below Lux* → after reload it is auto-corrected to ≥ Off Below
-- [ ] **↻ Refresh button (v1.0.7):** change the light hitting the sensor, click Refresh →
-      table shows the *new* value immediately (forces a real read, not a stale re-fetch)
+- [x] Settings page renders: sub-sections + Lux/Brightness and Readings tables OK
+- [x] Dark-off fields present
+- [x] Threshold clamp auto-corrects On Above < Off Below
+- [x] ↻ Refresh returns a genuinely fresh reading
+- [ ] **Re-check (v1.0.12):** *Off When Dark* is now its **own sub-section** with the two
+      lux fields as a small Off Below / On Above table — renders correctly, values save
 
-## 2. Auto-brightness core (v1.0.6)
+## 2. Auto-brightness core — ✅ mostly passed 2026-07-09
 
-- [ ] With auto-bri on, power **off** from app/UI → lights **stay off** (no self-resurrection)
-- [ ] Power **on** → auto control resumes within ~2 s at a sane level, and no phantom manual
-      offset appears (info page: `Sensor Auto-Brightness … offset 0`)
-- [ ] Manual brightness nudge while on → offset captured and tracked as before (regression)
-- [ ] Nightlight fade runs undisturbed → auto-bri doesn't fight it, fade not captured as offset
+- [x] Power off from app/UI → lights stay off
+- [x] Power on → clean resume, no phantom offset
+- [x] Manual nudge → offset captured and tracked
+- [ ] Nightlight fade untouched by auto-bri, not captured as offset *(not tested yet)*
 
-## 3. Dark-off (v1.0.9–v1.0.11)
+## 3. Dark-off — ✅ base behavior passed 2026-07-09; ⟳ re-test new semantics on v1.0.12
 
-Suggested settings for the test: *Off When Dark* ✓, *Off Below Lux* = 5, *On Above Lux* = 20.
+Passed on v1.0.11: turns off in dark ✓, no flapping in band ✓, back on when bright ✓,
+manual override + disable ✓.
 
-- [ ] Cover the sensor (< 5 lx) → strip turns **fully off**
-- [ ] Light in the 5–20 lx band → stays off (hysteresis band, no flapping)
-- [ ] Above 20 lx → comes back on, **jumping straight** to the mapped brightness (no slow fade-up)
-- [ ] While dark/off, turn lights **on** manually → they stay on (auto keeps hands off);
-      brighten past 20 lx → auto control resumes
-- [ ] Untick *Off When Dark*, save → lux thresholds inert, normal auto-bri behavior
+**Found bug (fixed in v1.0.12):** after a slider adjustment (manual offset), covering
+the sensor no longer switched the strip off — the override latch caught any brightness
+change and only released at On Above Lux.
 
-## 4. MQTT / Home Assistant (v1.0.6 + v1.0.8)
+Re-test with v1.0.12 (suggest Off Below = 5, On Above = 20):
 
-- [ ] Enable *Home Assistant Discovery* while MQTT is already connected → entities appear in HA
-      **without a reboot or MQTT reconnect** (v1.0.6 discovery fix)
-- [ ] **Overnight soak:** *Publish Changes Only* on, stable/dark conditions → entities stay
-      *available* past 30 min (heartbeat; old bug made Illuminance go unavailable every night)
-- [ ] Pull device power → HA entities go *unavailable* within the broker keepalive
-      (LWT availability, v1.0.8); repower → back to *available*
-- [ ] **Auto Brightness switch** in HA: toggle in HA → device engages/disengages auto-bri;
-      toggle from the WLED side (settings save or JSON preset) → HA switch state follows
-- [ ] Untick one reading (e.g. Heat Index), save → its HA entity **disappears**
-      (retained-config cleanup); re-tick → it returns
+- [ ] Adjust brightness via slider (offset captured), then cover the sensor →
+      strip **switches off** (darkness wins over adjustments)
+- [ ] While off due to darkness, turn lights **on** (slider up from 0 or power toggle) →
+      they **stay on** in the dark; info line shows `dark-off (overridden)`
+- [ ] Brighten the room past On Above Lux → override releases, normal auto-brightness
+      resumes at the mapped level
+- [ ] While overridden (lit in the dark), power **off** → dark-off re-arms immediately
+      (strip stays off in darkness; no override left behind)
+- [ ] Info line shows `dark-off` while engaged, nothing when bright
+- [ ] Slider all the way down while bright → display dims to 1 but never turns off
+      (mapping floor; only dark-off may write 0)
 
-## 5. Sensor dropout recovery (v1.0.6)
+## 4. MQTT / Home Assistant — ⏳ not tested yet
 
-- [ ] Unplug the **BMP180** (or module SDA) → within ~15 s pressure shows *Not Found*,
-      **no garbage values** published on MQTT
-- [ ] Replug → recovers within 30 s **and** HA entities reappear without a reboot
-      (discovery-on-recovery)
-- [ ] Quick regression: same unplug/replug for HTU21D and BH1750 if convenient
+- [ ] Enable *HA Discovery* while MQTT connected → entities appear without reboot/reconnect
+- [ ] **Overnight soak:** Publish Changes Only on, stable/dark → entities stay *available*
+      past 30 min (heartbeat)
+- [ ] Pull device power → entities *unavailable* (LWT); repower → back
+- [ ] *Auto Brightness* switch in HA works both directions (HA→device, device→HA)
+- [ ] Untick a reading (e.g. Heat Index) → HA entity disappears; re-tick → returns
+
+## 5. Sensor dropout recovery — ⏳ not tested yet
+
+- [ ] Unplug BMP180 → *Not Found* within ~15 s, no garbage on MQTT
+- [ ] Replug → recovers ≤ 30 s, HA entities reappear without reboot
+- [ ] Quick regression: HTU21D / BH1750 unplug-replug
 
 ---
 
 ## Results / notes
 
-| Date | Item | Result | Notes |
-|------|------|--------|-------|
-|      |      |        |       |
+| Date       | Item                       | Result | Notes |
+|------------|----------------------------|--------|-------|
+| 2026-07-09 | Settings page (§1)         | ✅ pass | Requested own sub-section + table for dark-off → shipped in v1.0.12 |
+| 2026-07-09 | Auto-bri core (§2)         | ✅ pass | Nightlight still pending |
+| 2026-07-09 | Dark-off base (§3)         | ✅ pass | — |
+| 2026-07-09 | Dark-off + offset (§3)     | ❌ fail | Override latch ate the off; fixed in v1.0.12 (`075fa12`), re-test |
+| 2026-07-09 | MQTT/HA (§4), recovery (§5)| ⏳      | Not yet testable on the bench |
