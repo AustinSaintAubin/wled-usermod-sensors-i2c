@@ -1,9 +1,9 @@
-# Bench Test Checklist — v1.0.12
+# Bench Test Checklist — v1.0.14
 
-Hardware validation for everything changed since v1.0.5. First bench pass ran
-**2026-07-09 on v1.0.11**; it found the offset/dark-off bug fixed in v1.0.12
-(commit `075fa12`), so the dark-off section needs a **re-test on v1.0.12**.
-After a clean pass: `git tag v1.0.12 && git push origin v1.0.12`.
+Hardware validation for everything changed since v1.0.5. Bench passes ran
+2026-07-09/10; §1–§3 are fully green. **Remaining: §4 MQTT/Home Assistant
+(incl. overnight soak) and §5 dropout recovery.**
+After a clean pass: `git tag v1.0.14 && git push origin v1.0.14`.
 
 > ⚠️ **Re-flash note (v1.0.12):** the Off When Dark settings moved into their own
 > config sub-section, so its three values (Enabled / Off Below Lux / On Above Lux)
@@ -11,23 +11,23 @@ After a clean pass: `git tag v1.0.12 && git push origin v1.0.12`.
 
 ---
 
-## 1. Flash & settings page — ✅ passed 2026-07-09 (v1.0.11), one re-check
+## 1. Flash & settings page — ✅ passed in full (2026-07-09 v1.0.11, re-checks 2026-07-10 v1.0.14)
 
 - [x] Settings page renders: sub-sections + Lux/Brightness and Readings tables OK
 - [x] Dark-off fields present
 - [x] Threshold clamp auto-corrects On Above < Off Below
 - [x] ↻ Refresh returns a genuinely fresh reading
-- [ ] **Re-check (v1.0.12):** *Off When Dark* is now its **own sub-section** with the two
+- [x] **Re-check (v1.0.12):** *Off When Dark* is now its **own sub-section** with the two
       lux fields as a small Off Below / On Above table — renders correctly, values save
-- [ ] **Reset Offset button (v1.0.14):** with an offset active, click *Reset Offset* →
+- [x] **Reset Offset button (v1.0.14):** with an offset active, click *Reset Offset* →
       shows "Offset Cleared ✓" and the info line offset returns to 0 instantly, no Save
 
-## 2. Auto-brightness core — ✅ mostly passed 2026-07-09
+## 2. Auto-brightness core — ✅ passed in full (2026-07-09; nightlight 2026-07-10)
 
 - [x] Power off from app/UI → lights stay off
 - [x] Power on → clean resume, no phantom offset
 - [x] Manual nudge → offset captured and tracked
-- [ ] Nightlight fade untouched by auto-bri, not captured as offset *(not tested yet)*
+- [X] Nightlight fade untouched by auto-bri, not captured as offset; lights stay off after fading to 0
 
   *How to test nightlight:* in WLED, *Config → LED Preferences → Timed light*: set
   Duration = 1 min, Target brightness = 0, mode = Fade. Back on the main page, click
@@ -84,4 +84,6 @@ Re-tested with v1.0.12 (Off Below = 5, On Above = 20 — now the defaults as of 
 | 2026-07-09 | Dark-off base (§3)         | ✅ pass | — |
 | 2026-07-09 | Dark-off + offset (§3)     | ❌ fail | Override latch ate the off; fixed in v1.0.12 (`075fa12`) |
 | 2026-07-10 | Dark-off v1.0.12 semantics (§3) | ✅ pass | All six re-test items; 5/20 lux promoted to defaults in v1.0.13 |
-| 2026-07-09 | MQTT/HA (§4), recovery (§5)| ⏳      | Not yet testable on the bench |
+| 2026-07-10 | Nightlight fade (§2)       | ✅ pass | Fade undisturbed, clean after, no offset capture |
+| 2026-07-10 | UI re-checks (§1)          | ✅ pass | Dark-off sub-section/table + Reset Offset button (v1.0.14) |
+| 2026-07-10 | MQTT/HA (§4), recovery (§5)| ⏳      | Awaiting broker/HA access and a cable-pull session |
