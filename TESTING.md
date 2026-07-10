@@ -19,6 +19,8 @@ After a clean pass: `git tag v1.0.12 && git push origin v1.0.12`.
 - [x] ↻ Refresh returns a genuinely fresh reading
 - [ ] **Re-check (v1.0.12):** *Off When Dark* is now its **own sub-section** with the two
       lux fields as a small Off Below / On Above table — renders correctly, values save
+- [ ] **Reset Offset button (v1.0.14):** with an offset active, click *Reset Offset* →
+      shows "Offset Cleared ✓" and the info line offset returns to 0 instantly, no Save
 
 ## 2. Auto-brightness core — ✅ mostly passed 2026-07-09
 
@@ -26,6 +28,12 @@ After a clean pass: `git tag v1.0.12 && git push origin v1.0.12`.
 - [x] Power on → clean resume, no phantom offset
 - [x] Manual nudge → offset captured and tracked
 - [ ] Nightlight fade untouched by auto-bri, not captured as offset *(not tested yet)*
+
+  *How to test nightlight:* in WLED, *Config → LED Preferences → Timed light*: set
+  Duration = 1 min, Target brightness = 0, mode = Fade. Back on the main page, click
+  the **moon icon** in the top toolbar to start it. Expected: brightness fades down
+  smoothly over the minute with auto-bri enabled (no bouncing back up every 2 s);
+  after it reaches 0 the lights stay off; the info line offset is unchanged.
 
 ## 3. Dark-off — ✅ passed in full (base 2026-07-09, v1.0.12 semantics re-test 2026-07-10)
 

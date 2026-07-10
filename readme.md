@@ -116,7 +116,7 @@ and Home Assistant discovery.
 | Smoothing             | 70 %    | Exponential smoothing (0 = instant, higher = smoother) |
 | Update Interval       | 2 s     | How often brightness is recomputed |
 | Allow Manual Offset   | on      | See "Manual adjustments" below |
-| Reset Offset          | —       | Tick + Save once to clear the current manual offset |
+| Reset Offset          | button  | Instantly clears the manual offset (sends the `resetOffset` JSON command — no Save needed) |
 
 **Off When Dark** (own sub-section; the two lux fields render as a small table)
 

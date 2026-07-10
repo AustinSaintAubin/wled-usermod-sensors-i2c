@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.13"  // keep in sync with library.json (CI-checked)
+#define SENSORS_I2C_VERSION "1.0.14"  // keep in sync with library.json (CI-checked)
 
 #define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
 #define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
@@ -60,7 +60,6 @@ private:
   uint16_t offBelowLux = 5;      // turn strip fully off below this lux
   uint16_t onAboveLux  = 20;     // turn back on at/above this lux (clamped >= offBelowLux)
   bool     allowManualOffset = true;
-  bool     resetOffset = false;  // momentary; cleared on save
 
   // ------- runtime sensor state -------
   BH1750                    lightMeter;
@@ -646,7 +645,15 @@ public:
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Smoothing',1,'% (0=off)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Update Interval',1,'sec');"));
     oappend(F("addInfo('Sensors I2C:Off When Dark:Enabled',1,'turn strip fully off in darkness');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Reset Offset',1,'clears manual offset');"));
+
+    // Instant "Reset Offset" button (replaces the old tick+Save checkbox): sends
+    // the resetOffset JSON command directly, no Save needed.
+    oappend(F("(function(){try{var en=d.getElementsByName('Sensors I2C:Auto Brightness:Allow Manual Offset');if(!en.length)return;var e=en[en.length-1];"));
+    oappend(F("var btn=d.createElement('button');btn.type='button';btn.className='btn sml';btn.textContent='Reset Offset';"));
+    oappend(F("btn.addEventListener('click',function(){fetch('/json/state',{method:'POST',headers:{'Content-Type':'application/json'},body:'{\"SensorsI2C\":{\"resetOffset\":true}}'}).then(function(){btn.textContent='Offset Cleared \\u2713';setTimeout(function(){btn.textContent='Reset Offset';},1500);}).catch(function(){});});"));
+    oappend(F("var m=e.nextSibling;while(m&&!(m.nodeType==1&&m.tagName=='BR'))m=m.nextSibling;var ref=m?m.nextSibling:null;"));
+    oappend(F("e.parentNode.insertBefore(btn,ref);e.parentNode.insertBefore(d.createElement('br'),btn.nextSibling);"));
+    oappend(F("}catch(e){}})();"));
 
     // Arrange the four Lux/Brightness fields into a 2x2 mapping table
     // (rows Min/Max x columns Lux|Brightness), styled to match WLED's settings
@@ -761,7 +768,6 @@ public:
     a[F("Smoothing")] = smoothing;
     a[F("Update Interval")] = briUpdateInterval;
     a[F("Allow Manual Offset")] = allowManualOffset;
-    a[F("Reset Offset")] = false; // momentary: never persists as checked
 
     JsonObject o = top.createNestedObject(FPSTR(_grpDarkOff));
     o[FPSTR(_enabled)] = darkOffEnabled;
@@ -808,7 +814,6 @@ public:
     configComplete &= getJsonValue(a[F("Smoothing")], smoothing, 70);
     configComplete &= getJsonValue(a[F("Update Interval")], briUpdateInterval, 2);
     configComplete &= getJsonValue(a[F("Allow Manual Offset")], allowManualOffset, true);
-    getJsonValue(a[F("Reset Offset")], resetOffset, false);
 
     JsonObject o = top[FPSTR(_grpDarkOff)];
     configComplete &= getJsonValue(o[FPSTR(_enabled)], darkOffEnabled, false);
@@ -826,8 +831,6 @@ public:
     smoothing = constrain(smoothing, 0, 95);
     briUpdateInterval = constrain(briUpdateInterval, 1, 600);
     if (onAboveLux < offBelowLux) onAboveLux = offBelowLux; // never invert the dark-off range
-
-    if (resetOffset) { userBriOffset = 0; resetOffset = false; }
 
     // I2C is a hard requirement: never let a saved "Enabled" re-arm the mod while
     // the global I2C pins are unconfigured (setup() disables it for the same reason;
