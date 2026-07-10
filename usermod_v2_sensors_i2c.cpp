@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.12"  // keep in sync with library.json (CI-checked)
+#define SENSORS_I2C_VERSION "1.0.13"  // keep in sync with library.json (CI-checked)
 
 #define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
 #define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
@@ -57,8 +57,8 @@ private:
   uint8_t  smoothing = 70;       // EMA smoothing percent (0 = off, higher = smoother)
   uint8_t  briUpdateInterval = 2;// seconds between brightness updates
   bool     darkOffEnabled = false; // master switch for the dark-off (Off When Dark) function
-  uint16_t offBelowLux = 0;      // turn strip fully off below this lux
-  uint16_t onAboveLux  = 0;      // turn back on at/above this lux (clamped >= offBelowLux)
+  uint16_t offBelowLux = 5;      // turn strip fully off below this lux
+  uint16_t onAboveLux  = 20;     // turn back on at/above this lux (clamped >= offBelowLux)
   bool     allowManualOffset = true;
   bool     resetOffset = false;  // momentary; cleared on save
 
@@ -812,8 +812,8 @@ public:
 
     JsonObject o = top[FPSTR(_grpDarkOff)];
     configComplete &= getJsonValue(o[FPSTR(_enabled)], darkOffEnabled, false);
-    configComplete &= getJsonValue(o[F("Off Below Lux")], offBelowLux, 0);
-    configComplete &= getJsonValue(o[F("On Above Lux")], onAboveLux, 0);
+    configComplete &= getJsonValue(o[F("Off Below Lux")], offBelowLux, 5);
+    configComplete &= getJsonValue(o[F("On Above Lux")], onAboveLux, 20);
 
     // sanity / clamping
     readInterval = constrain(readInterval, 1, 3600);

@@ -27,7 +27,7 @@ After a clean pass: `git tag v1.0.12 && git push origin v1.0.12`.
 - [x] Manual nudge → offset captured and tracked
 - [ ] Nightlight fade untouched by auto-bri, not captured as offset *(not tested yet)*
 
-## 3. Dark-off — ✅ base behavior passed 2026-07-09; ⟳ re-test new semantics on v1.0.12
+## 3. Dark-off — ✅ passed in full (base 2026-07-09, v1.0.12 semantics re-test 2026-07-10)
 
 Passed on v1.0.11: turns off in dark ✓, no flapping in band ✓, back on when bright ✓,
 manual override + disable ✓.
@@ -36,18 +36,18 @@ manual override + disable ✓.
 the sensor no longer switched the strip off — the override latch caught any brightness
 change and only released at On Above Lux.
 
-Re-test with v1.0.12 (suggest Off Below = 5, On Above = 20):
+Re-tested with v1.0.12 (Off Below = 5, On Above = 20 — now the defaults as of v1.0.13):
 
-- [ ] Adjust brightness via slider (offset captured), then cover the sensor →
+- [X] Adjust brightness via slider (offset captured), then cover the sensor →
       strip **switches off** (darkness wins over adjustments)
-- [ ] While off due to darkness, turn lights **on** (slider up from 0 or power toggle) →
+- [X] While off due to darkness, turn lights **on** (slider up from 0 or power toggle) →
       they **stay on** in the dark; info line shows `dark-off (overridden)`
-- [ ] Brighten the room past On Above Lux → override releases, normal auto-brightness
+- [X] Brighten the room past On Above Lux → override releases, normal auto-brightness
       resumes at the mapped level
-- [ ] While overridden (lit in the dark), power **off** → dark-off re-arms immediately
+- [X] While overridden (lit in the dark), power **off** → dark-off re-arms immediately
       (strip stays off in darkness; no override left behind)
-- [ ] Info line shows `dark-off` while engaged, nothing when bright
-- [ ] Slider all the way down while bright → display dims to 1 but never turns off
+- [X] Info line shows `dark-off` while engaged, nothing when bright
+- [X] Slider all the way down while bright → display dims to 1 but never turns off
       (mapping floor; only dark-off may write 0)
 
 ## 4. MQTT / Home Assistant — ⏳ not tested yet
@@ -74,5 +74,6 @@ Re-test with v1.0.12 (suggest Off Below = 5, On Above = 20):
 | 2026-07-09 | Settings page (§1)         | ✅ pass | Requested own sub-section + table for dark-off → shipped in v1.0.12 |
 | 2026-07-09 | Auto-bri core (§2)         | ✅ pass | Nightlight still pending |
 | 2026-07-09 | Dark-off base (§3)         | ✅ pass | — |
-| 2026-07-09 | Dark-off + offset (§3)     | ❌ fail | Override latch ate the off; fixed in v1.0.12 (`075fa12`), re-test |
+| 2026-07-09 | Dark-off + offset (§3)     | ❌ fail | Override latch ate the off; fixed in v1.0.12 (`075fa12`) |
+| 2026-07-10 | Dark-off v1.0.12 semantics (§3) | ✅ pass | All six re-test items; 5/20 lux promoted to defaults in v1.0.13 |
 | 2026-07-09 | MQTT/HA (§4), recovery (§5)| ⏳      | Not yet testable on the bench |

@@ -123,8 +123,8 @@ and Home Assistant discovery.
 | Setting       | Default | Notes |
 |---------------|---------|-------|
 | Enabled       | off     | Master switch: turn the LEDs fully off in darkness |
-| Off Below Lux | 0       | Lux below which the LEDs switch off |
-| On Above Lux  | 0       | Lux at/above which normal auto-brightness resumes; kept ≥ *Off Below Lux* (set higher for hysteresis) |
+| Off Below Lux | 5       | Lux below which the LEDs switch off |
+| On Above Lux  | 20      | Lux at/above which normal auto-brightness resumes; kept ≥ *Off Below Lux* (set higher for hysteresis) |
 
 ## Auto-brightness behaviour
 
