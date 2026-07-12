@@ -82,10 +82,13 @@ flags) — copy it to the WLED repo root as `platformio_override.ini` and adjust
 
 ## Settings (Config → Usermods → "Sensors I2C")
 
-The top of the section shows a **live readings table** (Temperature / Humidity / Pressure /
-Illuminance / Auto-Brightness) with a **↻ Refresh** button that takes a **fresh sensor
-reading** (via the JSON `read` command below) and re-fetches the values from `/json/info` —
-so you can check the sensors without leaving the settings page.
+The section starts with the master **Enabled** checkbox (hint: needs the global I²C pins
+configured at the top of the Usermods settings page). Directly below it, a **Live Readings
+table** (Temperature / Humidity / Pressure / Illuminance / Auto-Brightness) with a
+**↻ Refresh** button takes a **fresh sensor reading** (via the JSON `read` command below)
+and re-fetches the values from `/json/info` — so you can check the sensors without leaving
+the settings page. When there's nothing to show, the table says *(usermod disabled)* or
+*(no readings — check sensor wiring)* instead of sitting empty.
 
 **Sensors**
 
@@ -96,8 +99,6 @@ so you can check the sensors without leaving the settings page.
 | Decimals                   | 1       | Rounding for temp / humidity / pressure (0–3) |
 | BH1750 Address             | 0x23    | Light-sensor I²C address (`0x23`, or `0x5C` if its ADDR pin is high) |
 | Station Altitude           | 0 m     | Your altitude above sea level, used for sea-level pressure |
-| Publish Changes Only       | on      | Only publish a value over MQTT when it changes (a full refresh still goes out every 5 min so Home Assistant entities never expire) |
-| Home Assistant Discovery   | off     | Publish HA MQTT discovery configs |
 
 **Readings** — a checkbox per reading (all **on** by default) to individually show/publish or
 hide each one: Temperature, Humidity, Absolute Humidity, Dew Point, Heat Index, Pressure,
@@ -125,6 +126,15 @@ and Home Assistant discovery.
 | Enabled       | off     | Master switch: turn the LEDs fully off in darkness |
 | Off Below Lux | 5       | Lux below which the LEDs switch off |
 | On Above Lux  | 20      | Lux at/above which normal auto-brightness resumes; kept ≥ *Off Below Lux* (set higher for hysteresis) |
+
+**MQTT & Home Assistant** (the page header displays as "MQTT Home Assistant" — WLED strips
+punctuation from group titles; upgrading from ≤ v1.0.14 migrates both values automatically
+from their old spot under *Sensors* on first boot)
+
+| Setting                  | Default | Notes |
+|--------------------------|---------|-------|
+| Publish Changes Only     | on      | Only publish a value over MQTT when it changes (a full refresh still goes out every 5 min so Home Assistant entities never expire) |
+| Home Assistant Discovery | off     | Publish HA MQTT discovery configs |
 
 ## Auto-brightness behaviour
 

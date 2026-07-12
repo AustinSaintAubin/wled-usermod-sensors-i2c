@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.14"  // keep in sync with library.json (CI-checked)
+#define SENSORS_I2C_VERSION "1.0.15"  // keep in sync with library.json (CI-checked)
 
 #define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
 #define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
@@ -113,6 +113,7 @@ private:
   static const char _grpReadings[];
   static const char _grpAutoBri[];
   static const char _grpDarkOff[];
+  static const char _grpMqtt[];
   static const char _stateKey[];
 
   // ---- helpers ----
@@ -645,6 +646,7 @@ public:
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Smoothing',1,'% (0=off)');"));
     oappend(F("addInfo('Sensors I2C:Auto Brightness:Update Interval',1,'sec');"));
     oappend(F("addInfo('Sensors I2C:Off When Dark:Enabled',1,'turn strip fully off in darkness');"));
+    oappend(F("addInfo('Sensors I2C:Enabled',1,'master switch — needs global I2C pins (top of this page)');"));
 
     // Instant "Reset Offset" button (replaces the old tick+Save checkbox): sends
     // the resetOffset JSON command directly, no Save needed.
@@ -698,21 +700,22 @@ public:
     oappend(F("mv('Off Below Lux',a1);mv('On Above Lux',a2);"));
     oappend(F("}catch(e){}})();"));
 
-    // "Readings" subsection (matches the Sensors/Auto Brightness sub-headers): a
-    // live table populated from /json/info plus a WLED-styled Refresh button.
+    // "Live Readings" block between the master Enabled row and the Sensors group:
+    // a live table populated from /json/info plus a WLED-styled Refresh button.
     oappend(F("(function(){try{if(d.getElementById('si2cRd'))return;"));
     oappend(F("var en=d.getElementsByName('Sensors I2C:Enabled');if(!en.length)return;"));
-    oappend(F("var sec=en[en.length-1];while(sec&&!(sec.nodeType==1&&sec.tagName=='DIV'&&sec.className=='sec'))sec=sec.parentNode;if(!sec)return;"));
+    oappend(F("var cb=en[en.length-1],sec=cb;while(sec&&!(sec.nodeType==1&&sec.tagName=='DIV'&&sec.className=='sec'))sec=sec.parentNode;if(!sec)return;"));
     oappend(F("function C(t,x,r,hd){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='1px 10px';c.style.textAlign=r?'right':'left';if(hd){c.style.textAlign='center';c.style.borderBottom='1px solid #666';}return c;}"));
     oappend(F("var T=d.createElement('table');T.id='si2cRd';T.style.borderCollapse='collapse';T.style.margin='4px auto';T.style.minWidth='250px';"));
     oappend(F("function row(k,v,hd){var tr=d.createElement('tr');tr.appendChild(C(hd?'th':'td',k,0,hd));tr.appendChild(C(hd?'th':'td',v,1,hd));T.appendChild(tr);}"));
-    oappend(F("function refresh(){T.innerHTML='';row('Reading','Value',1);fetch('/json/info').then(function(r){return r.json();}).then(function(j){var u=(j&&j.u)||{},any=0;Object.keys(u).forEach(function(k){if(k.indexOf('Sensor ')!==0)return;any=1;var v=u[k];row(k.replace(/^Sensor /,''),Array.isArray(v)?v.filter(function(x){return x!==''&&x!=null;}).join(' '):(''+v));});if(!any)row('(no readings)','');}).catch(function(){row('(fetch failed)','');});}"));
+    oappend(F("function refresh(){T.innerHTML='';row('Reading','Value',1);fetch('/json/info').then(function(r){return r.json();}).then(function(j){var u=(j&&j.u)||{},any=0;Object.keys(u).forEach(function(k){if(k.indexOf('Sensor ')!==0)return;any=1;var v=u[k];row(k.replace(/^Sensor /,''),Array.isArray(v)?v.filter(function(x){return x!==''&&x!=null;}).join(' '):(''+v));});if(!any)row(cb.checked?'(no readings — check sensor wiring)':'(usermod disabled)','');}).catch(function(){row('(fetch failed)','');});}"));
     oappend(F("var hr=d.createElement('hr');hr.className='sml';"));
     oappend(F("var p=d.createElement('p'),u2=d.createElement('u');u2.textContent='Live Readings';p.appendChild(u2);"));
     oappend(F("function reread(){fetch('/json/state',{method:'POST',headers:{'Content-Type':'application/json'},body:'{\"SensorsI2C\":{\"read\":true}}'}).then(function(){setTimeout(refresh,400);}).catch(function(){refresh();});}"));
     oappend(F("var btn=d.createElement('button');btn.type='button';btn.className='btn sml';btn.textContent='\\u21bb Refresh';btn.addEventListener('click',reread);"));
     oappend(F("var bw=d.createElement('div');bw.appendChild(btn);"));
-    oappend(F("var an=sec.querySelector('hr.sml');function ins(n){if(an)sec.insertBefore(n,an);else sec.appendChild(n);}"));
+    oappend(F("var nx=cb.nextSibling;while(nx&&!(nx.nodeType==1&&nx.tagName=='BR'))nx=nx.nextSibling;"));
+    oappend(F("var an=nx?nx.nextSibling:sec.querySelector('hr.sml');function ins(n){sec.insertBefore(n,an||null);}"));
     oappend(F("ins(hr);ins(p);ins(T);ins(bw);"));
     oappend(F("refresh();}catch(e){}})();"));
 
@@ -745,8 +748,6 @@ public:
     s[F("Decimals")] = decimals;
     s[F("BH1750 Address")] = bhAddress;
     s[F("Station Altitude")] = stationAltitude;
-    s[F("Publish Changes Only")] = publishChangesOnly;
-    s[F("Home Assistant Discovery")] = haDiscovery;
 
     JsonObject r = top.createNestedObject(FPSTR(_grpReadings));
     r[F("Temperature")] = enTemp;
@@ -773,6 +774,10 @@ public:
     o[FPSTR(_enabled)] = darkOffEnabled;
     o[F("Off Below Lux")] = offBelowLux;
     o[F("On Above Lux")] = onAboveLux;
+
+    JsonObject m = top.createNestedObject(FPSTR(_grpMqtt));
+    m[F("Publish Changes Only")] = publishChangesOnly;
+    m[F("Home Assistant Discovery")] = haDiscovery;
   }
 
   bool readFromConfig(JsonObject &root) {
@@ -791,8 +796,6 @@ public:
     configComplete &= getJsonValue(s[F("Decimals")], decimals, 1);
     configComplete &= getJsonValue(s[F("BH1750 Address")], bhAddress, 0x23);
     configComplete &= getJsonValue(s[F("Station Altitude")], stationAltitude, 0);
-    configComplete &= getJsonValue(s[F("Publish Changes Only")], publishChangesOnly, true);
-    configComplete &= getJsonValue(s[F("Home Assistant Discovery")], haDiscovery, false);
 
     JsonObject r = top[FPSTR(_grpReadings)];
     configComplete &= getJsonValue(r[F("Temperature")], enTemp, true);
@@ -819,6 +822,19 @@ public:
     configComplete &= getJsonValue(o[FPSTR(_enabled)], darkOffEnabled, false);
     configComplete &= getJsonValue(o[F("Off Below Lux")], offBelowLux, 5);
     configComplete &= getJsonValue(o[F("On Above Lux")], onAboveLux, 20);
+
+    // v1.0.15: these lived under "Sensors". Missing new keys -> configComplete=false,
+    // so WLED re-saves cfg.json in the new shape on boot (wled.cpp needsCfgSave); the
+    // 2-arg getJsonValue leaves the member untouched, letting the legacy key win.
+    JsonObject mq = top[FPSTR(_grpMqtt)];
+    if (!getJsonValue(mq[F("Publish Changes Only")], publishChangesOnly)) {
+      configComplete = false;
+      getJsonValue(s[F("Publish Changes Only")], publishChangesOnly, true);
+    }
+    if (!getJsonValue(mq[F("Home Assistant Discovery")], haDiscovery)) {
+      configComplete = false;
+      getJsonValue(s[F("Home Assistant Discovery")], haDiscovery, false);
+    }
 
     // sanity / clamping
     readInterval = constrain(readInterval, 1, 3600);
@@ -883,6 +899,7 @@ const char UsermodSensorsI2C::_grpSensors[] PROGMEM = "Sensors";
 const char UsermodSensorsI2C::_grpReadings[] PROGMEM = "Readings";
 const char UsermodSensorsI2C::_grpAutoBri[] PROGMEM = "Auto Brightness";
 const char UsermodSensorsI2C::_grpDarkOff[] PROGMEM = "Off When Dark";
+const char UsermodSensorsI2C::_grpMqtt[]    PROGMEM = "MQTT & Home Assistant";
 const char UsermodSensorsI2C::_stateKey[]   PROGMEM = "SensorsI2C";
 
 static UsermodSensorsI2C sensors_i2c;
