@@ -49,10 +49,12 @@ After a clean pass: `git tag v1.0.16 && git push origin v1.0.16`.
 
 **v1.0.16 — Readings table fix — re-test:**
 
-- [ ] **Readings Measured | Derived table renders** with all 9 checkboxes (was
+- [x] **Readings Measured | Derived table renders** with all 9 checkboxes (was
       **empty since introduction**: the table was inserted after its anchor node had
       already been moved into it, so `insertBefore` threw and the guard silently ate
       the table — this was the original "Readings section is empty" complaint)
+      *(screenshot 2026-07-12; note: labels render without punctuation, e.g.
+      "Sea Level Pressure" — WLED strips it from field names, cosmetic only)*
 - [ ] Toggling a checkbox off + Save removes that reading from info page / Live
       Readings; re-tick → returns
 
@@ -123,4 +125,4 @@ Re-tested with v1.0.12 (Off Below = 5, On Above = 20 — now the defaults as of 
 | 2026-07-10 | MQTT/HA (§4), recovery (§5)| ⏳      | Awaiting broker/HA access and a cable-pull session |
 | 2026-07-12 | UI regroup v1.0.15 (§1)    | ✅ pass | Screenshot: Enabled-first + hint, Live Readings placement, MQTT group last, other tables OK; migration & empty-state checks still pending |
 | 2026-07-12 | Readings table (§1)        | ❌ fail | Measured/Derived table empty — insert-after-move bug (present since v1.0.11); fixed in v1.0.16 |
-| —          | Readings table v1.0.16 (§1)| ⏳      | Re-test: table renders, toggles still work end-to-end |
+| 2026-07-12 | Readings table v1.0.16 (§1)| ✅ pass | Screenshot: Measured/Derived table renders, all 9 checkboxes; toggle end-to-end check still pending |
