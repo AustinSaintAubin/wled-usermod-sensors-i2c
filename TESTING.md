@@ -1,10 +1,10 @@
-# Bench Test Checklist — v1.0.15
+# Bench Test Checklist — v1.0.16
 
 Hardware validation for everything changed since v1.0.5. Bench passes ran
-2026-07-09/10; §1–§3 are fully green (v1.0.15 adds new §1 re-test items).
-**Remaining: §1 v1.0.15 re-checks, §4 MQTT/Home Assistant (incl. overnight
+2026-07-09/10; §1–§3 are fully green (v1.0.15/16 add new §1 re-test items).
+**Remaining: §1 v1.0.16 re-checks, §4 MQTT/Home Assistant (incl. overnight
 soak) and §5 dropout recovery.**
-After a clean pass: `git tag v1.0.15 && git push origin v1.0.15`.
+After a clean pass: `git tag v1.0.16 && git push origin v1.0.16`.
 
 > ⚠️ **Re-flash note (v1.0.12):** the Off When Dark settings moved into their own
 > config sub-section, so its three values (Enabled / Off Below Lux / On Above Lux)
@@ -30,20 +30,31 @@ After a clean pass: `git tag v1.0.15 && git push origin v1.0.15`.
 
 **v1.0.15 layout regroup — re-test:**
 
-- [ ] *Enabled* renders **directly under the "Sensors I2C" title** with its hint text
+- [x] *Enabled* renders **directly under the "Sensors I2C" title** with its hint text
       ("master switch — needs global I2C pins"), no longer orphaned below Live Readings
-- [ ] *Live Readings* sits **between Enabled and Sensors**, exactly one rule between
-      each section (none doubled)
-- [ ] New *MQTT & Home Assistant* group renders **last** (header displays without the
-      `&` — WLED strips punctuation); both values save/reload
+      *(screenshot 2026-07-12)*
+- [x] *Live Readings* sits **between Enabled and Sensors**, exactly one rule between
+      each section (none doubled) *(screenshot 2026-07-12)*
+- [x] New *MQTT & Home Assistant* group renders **last** (header displays without the
+      `&` — WLED strips punctuation) *(screenshot 2026-07-12)*; still to check: both
+      values save/reload
 - [ ] **Migration:** flash over a v1.0.14 config → *Publish Changes Only* / *HA
       Discovery* values preserved; after one boot, cfg.json (via `/edit`) shows them
       under the new group and no longer under *Sensors*
 - [ ] Untick *Enabled* (no Save) → ↻ Refresh → live table shows "(usermod disabled)";
       re-tick → values return; with sensors dark/unwired shows "(no readings — check
       sensor wiring)"
-- [ ] Regression: Reset Offset button, Lux/Brightness 2×2 table, Off When Dark table,
-      Readings Measured/Derived table all still render
+- [x] Regression: Reset Offset button, Lux/Brightness 2×2 table, Off When Dark table
+      still render *(screenshot 2026-07-12)*
+
+**v1.0.16 — Readings table fix — re-test:**
+
+- [ ] **Readings Measured | Derived table renders** with all 9 checkboxes (was
+      **empty since introduction**: the table was inserted after its anchor node had
+      already been moved into it, so `insertBefore` threw and the guard silently ate
+      the table — this was the original "Readings section is empty" complaint)
+- [ ] Toggling a checkbox off + Save removes that reading from info page / Live
+      Readings; re-tick → returns
 
 ## 2. Auto-brightness core — ✅ passed in full (2026-07-09; nightlight 2026-07-10)
 
@@ -110,4 +121,6 @@ Re-tested with v1.0.12 (Off Below = 5, On Above = 20 — now the defaults as of 
 | 2026-07-10 | Nightlight fade (§2)       | ✅ pass | Fade undisturbed, clean after, no offset capture |
 | 2026-07-10 | UI re-checks (§1)          | ✅ pass | Dark-off sub-section/table + Reset Offset button (v1.0.14) |
 | 2026-07-10 | MQTT/HA (§4), recovery (§5)| ⏳      | Awaiting broker/HA access and a cable-pull session |
-| —          | UI regroup v1.0.15 (§1)    | ⏳      | Enabled-first layout, MQTT group + auto-migration, live-table empty states |
+| 2026-07-12 | UI regroup v1.0.15 (§1)    | ✅ pass | Screenshot: Enabled-first + hint, Live Readings placement, MQTT group last, other tables OK; migration & empty-state checks still pending |
+| 2026-07-12 | Readings table (§1)        | ❌ fail | Measured/Derived table empty — insert-after-move bug (present since v1.0.11); fixed in v1.0.16 |
+| —          | Readings table v1.0.16 (§1)| ⏳      | Re-test: table renders, toggles still work end-to-end |

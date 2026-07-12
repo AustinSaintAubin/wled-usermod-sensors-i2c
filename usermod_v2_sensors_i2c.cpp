@@ -23,7 +23,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.15"  // keep in sync with library.json (CI-checked)
+#define SENSORS_I2C_VERSION "1.0.16"  // keep in sync with library.json (CI-checked)
 
 #define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
 #define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
@@ -732,9 +732,12 @@ public:
     oappend(F("function C(t,x,hd){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='1px 10px';c.style.textAlign='left';if(hd){c.style.textAlign='center';c.style.borderBottom='1px solid #666';}return c;}"));
     oappend(F("var T=d.createElement('table');T.style.borderCollapse='collapse';T.style.margin='4px auto 2px';"));
     oappend(F("var h=d.createElement('tr');h.appendChild(C('th','Measured',1));h.appendChild(C('th','Derived',1));T.appendChild(h);"));
+    // insert the table BEFORE moving inputs into it (like the other table IIFEs):
+    // put() relocates ref itself, and insertBefore with a moved ref throws, which
+    // the guard swallowed — the section rendered empty (bug up to v1.0.15)
+    oappend(F("pa.insertBefore(T,ref);"));
     oappend(F("function put(c,n){if(!n)return;var k=K[n];if(k.hid)c.appendChild(k.hid);c.appendChild(k.cb);var s=d.createElement('span');s.textContent=' '+k.label;c.appendChild(s);}"));
     oappend(F("var rows=Math.max(L.length,R.length);for(var i=0;i<rows;i++){var tr=d.createElement('tr'),c1=C('td'),c2=C('td');put(c1,L[i]);put(c2,R[i]);tr.appendChild(c1);tr.appendChild(c2);T.appendChild(tr);}"));
-    oappend(F("pa.insertBefore(T,ref);"));
     oappend(F("}catch(e){}})();"));
   }
 
