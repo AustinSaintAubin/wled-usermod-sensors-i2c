@@ -4,8 +4,15 @@
 
 A community [WLED](https://github.com/wled/WLED) usermod for the common 3-in-1 I²C
 environmental breakout. It reports temperature, humidity, pressure and ambient light to
-WLED's Info page / `/json` and (optionally) over MQTT / Home Assistant, and can use the
-light sensor to **drive WLED's overall brightness** from ambient light.
+WLED's Info page / `/json` and (optionally) over MQTT / Home Assistant.
+
+> **v2.0.0 — auto-brightness moved:** the ambient-light brightness control that used to
+> live in this usermod is now its own usermod,
+> [wled-usermod-auto-brightness](https://github.com/AustinSaintAubin/wled-usermod-auto-brightness)
+> (which adds VEML7700 and analog photocell support). Both usermods can be installed
+> together and can share the same BH1750 — see [Install / Build](#install--build).
+> Presets/automations change from `{"SensorsI2C":{"autoBri":…}}` to `{"AutoBri":{"on":…}}`;
+> the MQTT `<deviceTopic>/autobri` topics are now served by the new usermod.
 
 | Sensor       | Measures                         | Default I²C address |
 |--------------|----------------------------------|---------------------|
@@ -30,8 +37,6 @@ The three addresses don't collide, so the whole module sits on one bus.
   (entirely optional — the mod also runs fine with MQTT disabled).
 - **Derived values** from the raw readings: absolute humidity, dew point, heat index
   (temp + humidity) and sea-level pressure + estimated altitude (pressure).
-- Uses the **light sensor to drive overall LED brightness** with a perceptual
-  (logarithmic) lux→brightness map, smoothing, and a relative manual-offset.
 - A missing chip only disables that one sensor; the others keep working, and a sensor that
   drops off the bus is **re-probed automatically** (every 30 s) and recovers.
 - **Self-contained** — makes no changes to `wled00/` and uses a local usermod id, so it
@@ -63,12 +68,14 @@ you don't copy it into the WLED source tree. See the WLED docs:
    if you prefer a fixed version. For local development you can instead point at a checkout:
    `custom_usermods = symlink:///absolute/path/to/wled-usermod-sensors-i2c`.
 
-   To combine with other usermods, use the **multiline** form (one entry per indented line) —
-   mixing a bare name and a URL on a single line breaks parsing:
+   To combine with other usermods — e.g. the companion
+   [wled-usermod-auto-brightness](https://github.com/AustinSaintAubin/wled-usermod-auto-brightness) —
+   use the **multiline** form (one entry per indented line); mixing a bare name and a URL on a
+   single line breaks parsing:
    ```ini
    custom_usermods =
      https://github.com/AustinSaintAubin/wled-usermod-sensors-i2c.git#main
-     four_line_display_ALT
+     https://github.com/AustinSaintAubin/wled-usermod-auto-brightness.git#main
    ```
 3. Build & flash for your ESP32.
 
@@ -84,7 +91,7 @@ flags) — copy it to the WLED repo root as `platformio_override.ini` and adjust
 
 The section starts with the master **Enabled** checkbox (hint: needs the global I²C pins
 configured at the top of the Usermods settings page). Directly below it, a **Live Readings
-table** (Temperature / Humidity / Pressure / Illuminance / Auto-Brightness) with a
+table** (Temperature / Humidity / Pressure / Illuminance / …) with a
 **↻ Refresh** button takes a **fresh sensor reading** (via the JSON `read` command below)
 and re-fetches the values from `/json/info` — so you can check the sensors without leaving
 the settings page. When there's nothing to show, the table says *(usermod disabled)* or
@@ -105,28 +112,6 @@ hide each one: Temperature, Humidity, Absolute Humidity, Dew Point, Heat Index, 
 Sea-Level Pressure, Altitude, Illuminance. Turning one off removes it from the info page, MQTT,
 and Home Assistant discovery.
 
-**Auto Brightness**
-
-| Setting               | Default | Notes |
-|-----------------------|---------|-------|
-| Enabled               | off     | Master switch for ambient-light brightness control |
-| Lux Min               | 1       | Lux value mapped to *Min Brightness* |
-| Lux Max               | 1000    | Lux value mapped to *Max Brightness* |
-| Min Brightness        | 5       | Brightness at/below Lux Min (0–255) |
-| Max Brightness        | 255     | Brightness at/above Lux Max (0–255) |
-| Smoothing             | 70 %    | Exponential smoothing (0 = instant, higher = smoother) |
-| Update Interval       | 2 s     | How often brightness is recomputed |
-| Allow Manual Offset   | on      | See "Manual adjustments" below |
-| Reset Offset          | button  | Instantly clears the manual offset (sends the `resetOffset` JSON command — no Save needed) |
-
-**Off When Dark** (own sub-section; the two lux fields render as a small table)
-
-| Setting       | Default | Notes |
-|---------------|---------|-------|
-| Enabled       | off     | Master switch: turn the LEDs fully off in darkness |
-| Off Below Lux | 5       | Lux below which the LEDs switch off |
-| On Above Lux  | 20      | Lux at/above which normal auto-brightness resumes; kept ≥ *Off Below Lux* (set higher for hysteresis) |
-
 **MQTT & Home Assistant** (the page header displays as "MQTT Home Assistant" — WLED strips
 punctuation from group titles; upgrading from ≤ v1.0.14 migrates both values automatically
 from their old spot under *Sensors* on first boot)
@@ -136,52 +121,12 @@ from their old spot under *Sensors* on first boot)
 | Publish Changes Only     | on      | Only publish a value over MQTT when it changes (a full refresh still goes out every 5 min so Home Assistant entities never expire) |
 | Home Assistant Discovery | off     | Publish HA MQTT discovery configs |
 
-## Auto-brightness behaviour
-
-Brightness is derived from the BH1750 lux reading using a **logarithmic** map,
-which matches how the eye perceives the very wide ambient range:
-
-```
-target = map( log10(lux) , log10(luxMin) , log10(luxMax) , briMin , briMax )
-```
-
-The target is **exponentially smoothed** to avoid flicker, then applied to WLED's
-global brightness via `stateUpdated(CALL_MODE_NO_NOTIFY)`. This keeps the active
-preset / effect / colors intact — only overall brightness changes — and does not
-broadcast to sync peers.
-
-Turning the LEDs **off** pauses auto-brightness (it will never switch them back on);
-control resumes automatically the next time you turn them on. Nightlight fades are
-likewise left alone.
-
-With **Off When Dark** enabled, the strip is switched fully off when ambient light
-drops below **Off Below Lux** — for rooms where even *Min Brightness* would glow —
-and normal control resumes once lux reaches **On Above Lux**. Set *On Above Lux*
-higher than *Off Below Lux* to add hysteresis so the lights don't flap around a
-single boundary (equal values give a plain threshold; the pair is auto-corrected so
-it can never invert).
-
-While it's dark, **darkness wins**: adjusting brightness only updates your manual
-offset and the strip switches back off on the next update. The one exception is
-explicitly turning the lights **on** from the dark-off state — that is honored
-(lights stay on) until the room reaches *On Above Lux*, after which darkness can win
-again. The current state is visible on the info page as `dark-off` /
-`dark-off (overridden)`. Note that normal auto-brightness never dims to 0 on its
-own — only *Off When Dark* switches the strip off.
-
-### Manual adjustments (relative offset)
-
-With *Allow Manual Offset* on, if you manually change brightness (UI, app, etc.)
-the difference from the current auto value is captured as an **offset** and added
-to all future auto values, so the system keeps tracking ambient light but shifted
-to your preference. Clear it with *Reset Offset* (or the JSON command below).
-
 ## External access (Home Assistant & similar)
 
 - **Info page / `/json/info`** — readings appear (grouped, each prefixed with `Sensor `) as
-  `Sensor Temperature`, `Sensor Humidity`, `Sensor Pressure`, `Sensor Illuminance`, the
+  `Sensor Temperature`, `Sensor Humidity`, `Sensor Pressure`, `Sensor Illuminance`, and the
   derived `Sensor Absolute Humidity` / `Dew Point` / `Heat Index` / `Sea-Level Pressure` /
-  `Altitude` (each removable via its **Readings** toggle), and a `Sensor Auto-Brightness` status line.
+  `Altitude` (each removable via its **Readings** toggle).
 - **MQTT** — published under your WLED device topic:
 
   ```
@@ -194,33 +139,26 @@ to your preference. Clear it with *Reset Offset* (or the JSON command below).
   <mqttDeviceTopic>/heat_index          (derived)
   <mqttDeviceTopic>/sea_level_pressure  (derived)
   <mqttDeviceTopic>/altitude            (derived)
-  <mqttDeviceTopic>/autobri             (auto-brightness state, ON/OFF, retained)
-  <mqttDeviceTopic>/autobri/set         (command topic: ON/OFF or 1/0)
   ```
 
 - **Home Assistant** — with *Home Assistant Discovery* on and MQTT connected, the sensor
-  entities (with proper device classes/units) auto-register under the WLED device, plus an
-  **Auto Brightness switch** so ambient control can be toggled straight from HA. All
+  entities (with proper device classes/units) auto-register under the WLED device. All
   entities use WLED's `/status` LWT as their availability topic, so they show
   *unavailable* whenever the device itself is offline.
-- **`/json/state`** — exposes `{"SensorsI2C":{"autoBri":<bool>,"offset":<int>}}`.
 
-## Controlling auto-brightness from a preset / API
+## JSON commands (preset / API)
 
 The usermod accepts commands in the JSON state under the `SensorsI2C` key, which
 is also processed when a **preset is applied**. Create a preset of type
 **"API command"** (or send the JSON to `/json/state`):
 
 ```json
-{ "SensorsI2C": { "autoBri": true } }                    // re-engage automatic control
-{ "SensorsI2C": { "resetOffset": true } }                // clear the manual offset
-{ "SensorsI2C": { "autoBri": true, "resetOffset": true } }// both at once
-{ "SensorsI2C": { "autoBri": false } }                   // hand brightness back to manual
-{ "SensorsI2C": { "read": true } }                       // take a fresh sensor reading now
+{ "SensorsI2C": { "read": true } }   // take a fresh sensor reading now
 ```
 
-This makes it easy to bind a button / schedule / scene to "return to automatic
-brightness".
+The former `autoBri` / `resetOffset` commands moved to the
+[auto-brightness usermod](https://github.com/AustinSaintAubin/wled-usermod-auto-brightness)
+as `{"AutoBri":{"on":…}}` / `{"AutoBri":{"resetOffset":true}}`.
 
 ## Notes / limitations
 

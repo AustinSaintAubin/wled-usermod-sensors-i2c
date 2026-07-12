@@ -15,15 +15,18 @@
 // Uses WLED's globally configured I2C pins (i2c_sda / i2c_scl). Wire.begin() is
 // already called by the WLED core, so it is NOT called here.
 //
-// The BH1750 lux reading can drive WLED's overall brightness (see Auto Brightness).
 // MQTT / Home Assistant publishing is optional and only compiled when MQTT is enabled.
+//
+// v2.0.0: the auto-brightness feature moved to its own usermod,
+// https://github.com/AustinSaintAubin/wled-usermod-auto-brightness (both can be
+// installed together and can share the BH1750).
 
 // Local usermod id so this mod stays fully self-contained (no edit to const.h).
 #ifndef USERMOD_ID_SENSORS_I2C
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "1.0.16"  // keep in sync with library.json (CI-checked)
+#define SENSORS_I2C_VERSION "2.0.0"  // keep in sync with library.json (CI-checked)
 
 #define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
 #define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
@@ -47,19 +50,6 @@ private:
   bool enAbsHum = true, enDew = true, enHeat = true, enSLP = true, enAlt = true; // derived
   int16_t  stationAltitude = 0;  // meters above sea level, for sea-level pressure
   uint8_t  bhAddress = 0x23;     // BH1750 I2C address (0x23 default, 0x5C if ADDR high)
-
-  // ------- auto-brightness settings -------
-  bool     autoBriEnabled = false;
-  uint16_t luxMin = 1;           // lux mapped to Min Brightness
-  uint16_t luxMax = 1000;        // lux mapped to Max Brightness
-  uint8_t  briMin = 5;           // brightness at/below luxMin
-  uint8_t  briMax = 255;         // brightness at/above luxMax
-  uint8_t  smoothing = 70;       // EMA smoothing percent (0 = off, higher = smoother)
-  uint8_t  briUpdateInterval = 2;// seconds between brightness updates
-  bool     darkOffEnabled = false; // master switch for the dark-off (Off When Dark) function
-  uint16_t offBelowLux = 5;      // turn strip fully off below this lux
-  uint16_t onAboveLux  = 20;     // turn back on at/above this lux (clamped >= offBelowLux)
-  bool     allowManualOffset = true;
 
   // ------- runtime sensor state -------
   BH1750                    lightMeter;
@@ -86,22 +76,9 @@ private:
   float lastAbsHum = NAN, lastDewC = NAN, lastHeatC = NAN, lastSeaLevel = NAN, lastAltitude = NAN;
 
   unsigned long lastReadTime = 0;
-  unsigned long lastBriTime  = 0;
   bool readRequested = false;    // JSON "read" command -> fresh sample on next loop()
 
-  // ------- auto-brightness runtime -------
-  float   briSmoothed   = NAN;   // EMA state (mapped brightness, before offset)
-  int     lastTargetNoOffset = -1;
-  int     userBriOffset = 0;     // relative offset captured from manual changes
-  uint8_t lastAutoBri   = 0;     // last brightness value we applied
-  bool    briBaselineSet = false;// have we applied auto brightness at least once
-  bool    applyingAuto  = false; // guards onStateChange against our own writes
-  bool    offPause      = false; // strip turned off by user -> pause auto-bri until back on
-  bool    autoOffActive = false; // dark-off engaged (Off When Dark); keeps monitoring lux
-  bool    darkOverride  = false; // user powered ON during dark-off: stay lit until On Above Lux
-
   bool discoveryDirty = true;    // (re)publish/clear HA discovery on next connected loop
-  bool autoBriPubDirty = true;   // publish auto-brightness switch state on next connected loop
 #ifndef WLED_DISABLE_MQTT
   unsigned long lastForcePublish = 0; // heartbeat timer (SENSORS_I2C_MQTT_HEARTBEAT_MS)
 #endif
@@ -111,8 +88,6 @@ private:
   static const char _enabled[];
   static const char _grpSensors[];
   static const char _grpReadings[];
-  static const char _grpAutoBri[];
-  static const char _grpDarkOff[];
   static const char _grpMqtt[];
   static const char _stateKey[];
 
@@ -213,8 +188,8 @@ private:
 #endif
   }
 
-  // Single lux read path shared by readSensors() and auto-brightness so both
-  // feed the same failure counter / dropout recovery. True when curLux is fresh.
+  // Single lux read path with failure counter / dropout recovery. True when
+  // curLux is fresh.
   bool readLux() {
     if (!bhFound) return false;
     float lux = lightMeter.readLightLevel();
@@ -225,76 +200,6 @@ private:
     bhFails = 0;
     curLux = lux;
     return true;
-  }
-
-  void updateAutoBrightness() {
-    if (nightlightActive) return;             // never fight the nightlight
-    if (bri == 0 && !autoOffActive) return;   // user powered off: paused until back on
-    if (!readLux()) return;
-
-    // optional dark-off ("Off When Dark"): below "Off Below Lux" switch the strip
-    // off entirely; normal control resumes at/above "On Above Lux" (user-set
-    // hysteresis; clamped >= off threshold so the range can't invert).
-    // Darkness wins: a brightness adjustment only updates the manual offset and
-    // the strip switches back off. The one exception is an explicit power-ON from
-    // the dark-off state (darkOverride, latched in onStateChange), which keeps
-    // the light on until the room reaches On Above Lux.
-    if (darkOffEnabled) {
-      if (autoOffActive) {
-        if (curLux >= (float)onAboveLux) {  // bright again: release dark-off (and any
-          autoOffActive = false;            // manual override) and resume control
-          darkOverride = false;
-          briSmoothed = NAN;                // jump straight to the mapped target
-        } else if (darkOverride) {
-          return;                           // lit on purpose while dark: hands off
-        } else {
-          if (bri > 0) {                    // darkness wins: (re)assert off, even
-            applyingAuto = true;            // right after a brightness adjustment
-            bri = 0;
-            lastAutoBri = 0;
-            stateUpdated(CALL_MODE_NO_NOTIFY);
-          }
-          return;
-        }
-      } else if (curLux < (float)offBelowLux) {
-        autoOffActive = true;
-        if (bri > 0) {
-          applyingAuto = true;
-          bri = 0;
-          lastAutoBri = 0;
-          stateUpdated(CALL_MODE_NO_NOTIFY);
-        }
-        return;
-      }
-    }
-
-    uint16_t lMin = max((uint16_t)1, luxMin);          // keep log valid
-    uint16_t lMax = max((uint16_t)(lMin + 1), luxMax); // ensure range
-    float lx = constrain(curLux, (float)lMin, (float)lMax);
-
-    float target = mapf(log10f(lx), log10f((float)lMin), log10f((float)lMax),
-                        (float)briMin, (float)briMax);
-
-    // exponential moving average to avoid flicker
-    if (isnan(briSmoothed)) {
-      briSmoothed = target;
-    } else {
-      float alpha = 1.0f - (constrain(smoothing, 0, 95) / 100.0f);
-      briSmoothed += alpha * (target - briSmoothed);
-    }
-
-    lastTargetNoOffset = (int)roundf(briSmoothed);
-    // floor at 1: the mapping/offset path must never power the strip off, or the
-    // off would be misread as a user power-off; only dark-off may write bri = 0
-    int finalBri = constrain(lastTargetNoOffset + userBriOffset, 1, 255);
-
-    if (!briBaselineSet || abs(finalBri - (int)bri) >= 2) {
-      applyingAuto = true;
-      bri = (uint8_t)finalBri;
-      lastAutoBri = bri;
-      briBaselineSet = true;
-      stateUpdated(CALL_MODE_NO_NOTIFY); // keep preset/effect/color; only change brightness
-    }
   }
 
 #ifndef WLED_DISABLE_MQTT
@@ -392,35 +297,6 @@ private:
     mqtt->publish(t.c_str(), 0, true, out.c_str());
   }
 
-  // HA switch for auto-brightness: state on <deviceTopic>/autobri, commands
-  // (ON/OFF) on <deviceTopic>/autobri/set — lets HA toggle ambient control
-  // without hand-written JSON API presets.
-  void createMqttSwitch(const String &name, bool active) {
-    String t = String(F("homeassistant/switch/")) + mqttClientID + F("/") + name + F("/config");
-    if (!active) { mqtt->publish(t.c_str(), 0, true, ""); return; }
-
-    StaticJsonDocument<768> doc;
-    doc[F("name")] = String(serverDescription) + " " + name;
-    String st = String(mqttDeviceTopic) + F("/autobri");
-    doc[F("state_topic")] = st;
-    doc[F("command_topic")] = st + F("/set");
-    doc[F("payload_on")] = F("ON");
-    doc[F("payload_off")] = F("OFF");
-    doc[F("unique_id")] = String(mqttClientID) + name;
-    addDiscoveryCommon(doc);
-
-    String out;
-    serializeJson(doc, out);
-    mqtt->publish(t.c_str(), 0, true, out.c_str());
-  }
-
-  void publishAutoBriState() {
-    if (!WLED_MQTT_CONNECTED) return;
-    char buf[128];
-    snprintf_P(buf, sizeof(buf), PSTR("%s/autobri"), mqttDeviceTopic);
-    mqtt->publish(buf, 0, true, autoBriEnabled ? "ON" : "OFF"); // retained so HA restarts see current state
-  }
-
   // (Re)publish HA discovery for enabled+present readings and clear the retained
   // config of every other reading (so toggling one off, or disabling HA discovery,
   // removes the entity). Serviced from loop() via discoveryDirty: MQTT connect,
@@ -447,7 +323,12 @@ private:
     createMqttSensor(F("Sea-Level Pressure"), topic, F("pressure"), F("hPa"), ha && enSLP && bmpFound);
     snprintf_P(topic, sizeof(topic), PSTR("%s/altitude"), mqttDeviceTopic);
     createMqttSensor(F("Altitude"), topic, F("distance"), F("m"), ha && enAlt && bmpFound);
-    createMqttSwitch(F("Auto Brightness"), ha && bhFound);
+    // v2.0.0: auto-brightness moved to wled-usermod-auto-brightness — clear the
+    // retained discovery config of the old HA switch (topic verbatim, incl. the
+    // space) so the orphaned entity actually disappears. Removable in a future
+    // version once ≤1.x installs are gone.
+    String legacy = String(F("homeassistant/switch/")) + mqttClientID + F("/Auto Brightness/config");
+    mqtt->publish(legacy.c_str(), 0, true, "");
   }
 #endif
 
@@ -486,11 +367,6 @@ public:
       readSensors();
     }
 
-    if (autoBriEnabled && bhFound && now - lastBriTime >= (unsigned long)briUpdateInterval * 1000) {
-      lastBriTime = now;
-      updateAutoBrightness();
-    }
-
     // recover any sensor that isn't currently present
     if ((!bhFound || !htuFound || !bmpFound) && now - lastProbeTime >= SENSORS_I2C_PROBE_INTERVAL_MS) {
       lastProbeTime = now;
@@ -501,42 +377,9 @@ public:
     // (re)publish/clear HA discovery after connect, settings save, or sensor recovery
     if (discoveryDirty && WLED_MQTT_CONNECTED) {
       discoveryDirty = false;
-      autoBriPubDirty = true;
       mqttInitialize();
     }
-    // switch state after connect / MQTT command / JSON command / settings save
-    if (autoBriPubDirty && WLED_MQTT_CONNECTED) {
-      autoBriPubDirty = false;
-      publishAutoBriState();
-    }
 #endif
-  }
-
-  // capture manual brightness changes as a relative offset
-  void onStateChange(uint8_t mode) {
-    if (!enabled || !autoBriEnabled) return;
-    if (applyingAuto) { applyingAuto = false; return; } // our own write
-    if (bri == 0) {                                     // powered off: not a manual offset
-      if (autoOffActive) darkOverride = false;          // off again in darkness: re-arm dark-off
-      else offPause = true;                             // normal power-off: pause until back on
-      return;
-    }
-    if (offPause) {                                     // powered back on: resume auto control;
-      offPause = false;                                 // the restored brightness isn't manual
-      lastAutoBri = bri;
-      return;
-    }
-    if (autoOffActive && lastAutoBri == 0) {            // powered ON while dark-off holds the strip
-      darkOverride = true;                              // off: deliberate "light despite darkness",
-      lastAutoBri = bri;                                // honored until the room reaches On Above Lux
-      return;
-    }
-    if (mode == CALL_MODE_NIGHTLIGHT) return;           // nightlight fade is not a manual change
-    if (!briBaselineSet || bri == lastAutoBri) return;  // not a brightness change we care about
-    if (allowManualOffset && lastTargetNoOffset >= 0) {
-      userBriOffset = constrain((int)bri - lastTargetNoOffset, -255, 255);
-    }
-    lastAutoBri = bri;
   }
 
   void addToJsonInfo(JsonObject &root) {
@@ -597,36 +440,13 @@ public:
       else if (curLux < 0) j.add(F("-"));
       else { j.add(roundDec(curLux)); j.add(F("lx")); }
     }
-    // Auto-brightness status: applied brightness (/255), the lux-mapped target,
-    // and the current manual offset. The second array element is always non-empty
-    // so WLED renders "value + suffix" (an empty suffix would stringify the whole
-    // array and show a stray trailing comma).
-    if (autoBriEnabled && bhFound) {
-      JsonArray j = user.createNestedArray(F("Sensor Auto-Brightness"));
-      j.add(bri);
-      String suffix = F(" / 255");
-      if (lastTargetNoOffset >= 0) suffix += String(F(", target ")) + lastTargetNoOffset;
-      suffix += String(F(", offset ")) + (userBriOffset > 0 ? "+" : "") + userBriOffset;
-      if (autoOffActive) suffix += darkOverride ? F(", dark-off (overridden)") : F(", dark-off");
-      j.add(suffix);
-    }
   }
 
-  // expose current auto-brightness state for external automation
-  void addToJsonState(JsonObject &root) {
-    JsonObject um = root[FPSTR(_stateKey)];
-    if (um.isNull()) um = root.createNestedObject(FPSTR(_stateKey));
-    um[F("autoBri")] = autoBriEnabled;
-    um[F("offset")] = userBriOffset;
-  }
-
-  // accept commands (also fires when a preset is applied) -> preset-triggerable reset
+  // accept commands (also fires when a preset is applied) -> preset-triggerable
   void readFromJsonState(JsonObject &root) {
     JsonObject um = root[FPSTR(_stateKey)];
     if (um.isNull()) return;
     bool b;
-    if (getJsonValue(um[F("autoBri")], b)) { autoBriEnabled = b; autoBriPubDirty = true; }
-    if (getJsonValue(um[F("resetOffset")], b) && b) userBriOffset = 0;
     if (getJsonValue(um[F("read")], b) && b) readRequested = true; // I2C happens in loop(), not here
   }
 
@@ -643,62 +463,7 @@ public:
     oappend(F("addInfo('Sensors I2C:Sensors:Read Interval',1,'sec');"));
     oappend(F("addInfo('Sensors I2C:Sensors:Decimals',1,'(0-3)');"));
     oappend(F("addInfo('Sensors I2C:Sensors:Station Altitude',1,'m (for sea-level pressure)');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Smoothing',1,'% (0=off)');"));
-    oappend(F("addInfo('Sensors I2C:Auto Brightness:Update Interval',1,'sec');"));
-    oappend(F("addInfo('Sensors I2C:Off When Dark:Enabled',1,'turn strip fully off in darkness');"));
     oappend(F("addInfo('Sensors I2C:Enabled',1,'master switch — needs global I2C pins (top of this page)');"));
-
-    // Instant "Reset Offset" button (replaces the old tick+Save checkbox): sends
-    // the resetOffset JSON command directly, no Save needed.
-    oappend(F("(function(){try{var en=d.getElementsByName('Sensors I2C:Auto Brightness:Allow Manual Offset');if(!en.length)return;var e=en[en.length-1];"));
-    oappend(F("var btn=d.createElement('button');btn.type='button';btn.className='btn sml';btn.textContent='Reset Offset';"));
-    oappend(F("btn.addEventListener('click',function(){fetch('/json/state',{method:'POST',headers:{'Content-Type':'application/json'},body:'{\"SensorsI2C\":{\"resetOffset\":true}}'}).then(function(){btn.textContent='Offset Cleared \\u2713';setTimeout(function(){btn.textContent='Reset Offset';},1500);}).catch(function(){});});"));
-    oappend(F("var m=e.nextSibling;while(m&&!(m.nodeType==1&&m.tagName=='BR'))m=m.nextSibling;var ref=m?m.nextSibling:null;"));
-    oappend(F("e.parentNode.insertBefore(btn,ref);e.parentNode.insertBefore(d.createElement('br'),btn.nextSibling);"));
-    oappend(F("}catch(e){}})();"));
-
-    // Arrange the four Lux/Brightness fields into a 2x2 mapping table
-    // (rows Min/Max x columns Lux|Brightness), styled to match WLED's settings
-    // (centered, borderless with a header underline, WLED 's' number inputs).
-    // Moves the existing input nodes so their name/value are preserved; guarded
-    // so it no-ops if the settings DOM ever changes.
-    oappend(F("(function(){try{var P='Sensors I2C:Auto Brightness:';"));
-    oappend(F("function vis(n){var a=d.getElementsByName(P+n);return a.length?a[a.length-1]:null;}"));
-    oappend(F("function hid(e){var p=e.previousSibling;while(p&&p.nodeType!=1)p=p.previousSibling;return(p&&p.tagName=='INPUT'&&p.type=='hidden')?p:null;}"));
-    oappend(F("function strip(e){var s=hid(e)||e,n=s.previousSibling;while(n&&n.nodeType==3){var x=n;n=n.previousSibling;x.remove();}var m=e.nextSibling;while(m){var q=m.nextSibling,b=(m.nodeType==1&&m.tagName=='BR');m.remove();if(b)break;m=q;}}"));
-    oappend(F("var F=['Lux Min','Lux Max','Brightness Min','Brightness Max'],E={},ok=1;"));
-    oappend(F("F.forEach(function(n){E[n]=vis(n);if(!E[n])ok=0;});if(!ok)return;"));
-    oappend(F("var pa=E['Lux Min'].parentNode;F.forEach(function(n){strip(E[n]);});"));
-    oappend(F("var ref=hid(E['Lux Min'])||E['Lux Min'];"));
-    oappend(F("function C(t,x,hd){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='1px 7px';c.style.textAlign='center';if(hd)c.style.borderBottom='1px solid #666';return c;}"));
-    oappend(F("var T=d.createElement('table');T.style.borderCollapse='collapse';T.style.margin='4px auto 6px';"));
-    oappend(F("var h=d.createElement('tr');h.appendChild(C('th','',1));h.appendChild(C('th','Lux (lx)',1));h.appendChild(C('th','Brightness',1));T.appendChild(h);"));
-    oappend(F("var r1=d.createElement('tr'),a1=C('td'),b1=C('td');r1.appendChild(C('th','Min'));r1.appendChild(a1);r1.appendChild(b1);T.appendChild(r1);"));
-    oappend(F("var r2=d.createElement('tr'),a2=C('td'),b2=C('td');r2.appendChild(C('th','Max'));r2.appendChild(a2);r2.appendChild(b2);T.appendChild(r2);"));
-    oappend(F("pa.insertBefore(T,ref);"));
-    oappend(F("function mv(n,c){var e=E[n],g=hid(e);e.className='s';if(g)c.appendChild(g);c.appendChild(e);}"));
-    oappend(F("mv('Lux Min',a1);mv('Brightness Min',b1);mv('Lux Max',a2);mv('Brightness Max',b2);"));
-    oappend(F("}catch(e){}})();"));
-
-    // Arrange the two Off When Dark lux fields into a small table (rows
-    // Off Below / On Above x one Lux column), same style/guards as the mapping table.
-    oappend(F("(function(){try{var P='Sensors I2C:Off When Dark:';"));
-    oappend(F("function vis(n){var a=d.getElementsByName(P+n);return a.length?a[a.length-1]:null;}"));
-    oappend(F("function hid(e){var p=e.previousSibling;while(p&&p.nodeType!=1)p=p.previousSibling;return(p&&p.tagName=='INPUT'&&p.type=='hidden')?p:null;}"));
-    oappend(F("function strip(e){var s=hid(e)||e,n=s.previousSibling;while(n&&n.nodeType==3){var x=n;n=n.previousSibling;x.remove();}var m=e.nextSibling;while(m){var q=m.nextSibling,b=(m.nodeType==1&&m.tagName=='BR');m.remove();if(b)break;m=q;}}"));
-    oappend(F("var F=['Off Below Lux','On Above Lux'],E={},ok=1;"));
-    oappend(F("F.forEach(function(n){E[n]=vis(n);if(!E[n])ok=0;});if(!ok)return;"));
-    oappend(F("var pa=E['Off Below Lux'].parentNode;F.forEach(function(n){strip(E[n]);});"));
-    oappend(F("var ref=hid(E['Off Below Lux'])||E['Off Below Lux'];"));
-    oappend(F("function C(t,x,hd){var c=d.createElement(t);if(x!=null)c.textContent=x;c.style.padding='1px 7px';c.style.textAlign='center';if(hd)c.style.borderBottom='1px solid #666';return c;}"));
-    oappend(F("var T=d.createElement('table');T.style.borderCollapse='collapse';T.style.margin='4px auto 6px';"));
-    oappend(F("var h=d.createElement('tr');h.appendChild(C('th','',1));h.appendChild(C('th','Lux (lx)',1));T.appendChild(h);"));
-    oappend(F("var r1=d.createElement('tr'),a1=C('td');r1.appendChild(C('th','Off Below'));r1.appendChild(a1);T.appendChild(r1);"));
-    oappend(F("var r2=d.createElement('tr'),a2=C('td');r2.appendChild(C('th','On Above'));r2.appendChild(a2);T.appendChild(r2);"));
-    oappend(F("pa.insertBefore(T,ref);"));
-    oappend(F("function mv(n,c){var e=E[n],g=hid(e);e.className='s';if(g)c.appendChild(g);c.appendChild(e);}"));
-    oappend(F("mv('Off Below Lux',a1);mv('On Above Lux',a2);"));
-    oappend(F("}catch(e){}})();"));
 
     // "Live Readings" block between the master Enabled row and the Sensors group:
     // a live table populated from /json/info plus a WLED-styled Refresh button.
@@ -763,21 +528,6 @@ public:
     r[F("Altitude")] = enAlt;
     r[F("Illuminance")] = enLux;
 
-    JsonObject a = top.createNestedObject(FPSTR(_grpAutoBri));
-    a[F("Enabled")] = autoBriEnabled;
-    a[F("Lux Min")] = luxMin;
-    a[F("Lux Max")] = luxMax;
-    a[F("Brightness Min")] = briMin;
-    a[F("Brightness Max")] = briMax;
-    a[F("Smoothing")] = smoothing;
-    a[F("Update Interval")] = briUpdateInterval;
-    a[F("Allow Manual Offset")] = allowManualOffset;
-
-    JsonObject o = top.createNestedObject(FPSTR(_grpDarkOff));
-    o[FPSTR(_enabled)] = darkOffEnabled;
-    o[F("Off Below Lux")] = offBelowLux;
-    o[F("On Above Lux")] = onAboveLux;
-
     JsonObject m = top.createNestedObject(FPSTR(_grpMqtt));
     m[F("Publish Changes Only")] = publishChangesOnly;
     m[F("Home Assistant Discovery")] = haDiscovery;
@@ -811,21 +561,6 @@ public:
     configComplete &= getJsonValue(r[F("Altitude")], enAlt, true);
     configComplete &= getJsonValue(r[F("Illuminance")], enLux, true);
 
-    JsonObject a = top[FPSTR(_grpAutoBri)];
-    configComplete &= getJsonValue(a[F("Enabled")], autoBriEnabled, false);
-    configComplete &= getJsonValue(a[F("Lux Min")], luxMin, 1);
-    configComplete &= getJsonValue(a[F("Lux Max")], luxMax, 1000);
-    configComplete &= getJsonValue(a[F("Brightness Min")], briMin, 5);
-    configComplete &= getJsonValue(a[F("Brightness Max")], briMax, 255);
-    configComplete &= getJsonValue(a[F("Smoothing")], smoothing, 70);
-    configComplete &= getJsonValue(a[F("Update Interval")], briUpdateInterval, 2);
-    configComplete &= getJsonValue(a[F("Allow Manual Offset")], allowManualOffset, true);
-
-    JsonObject o = top[FPSTR(_grpDarkOff)];
-    configComplete &= getJsonValue(o[FPSTR(_enabled)], darkOffEnabled, false);
-    configComplete &= getJsonValue(o[F("Off Below Lux")], offBelowLux, 5);
-    configComplete &= getJsonValue(o[F("On Above Lux")], onAboveLux, 20);
-
     // v1.0.15: these lived under "Sensors". Missing new keys -> configComplete=false,
     // so WLED re-saves cfg.json in the new shape on boot (wled.cpp needsCfgSave); the
     // 2-arg getJsonValue leaves the member untouched, letting the legacy key win.
@@ -845,11 +580,6 @@ public:
     tempUnit = constrain(tempUnit, 0, 1);
     if (bhAddress != 0x23 && bhAddress != 0x5C) bhAddress = 0x23;
     stationAltitude = constrain(stationAltitude, -430, 9000); // Dead Sea .. Everest
-    if (luxMax <= luxMin) luxMax = luxMin + 1;
-    if (briMax < briMin) { uint8_t t = briMin; briMin = briMax; briMax = t; }
-    smoothing = constrain(smoothing, 0, 95);
-    briUpdateInterval = constrain(briUpdateInterval, 1, 600);
-    if (onAboveLux < offBelowLux) onAboveLux = offBelowLux; // never invert the dark-off range
 
     // I2C is a hard requirement: never let a saved "Enabled" re-arm the mod while
     // the global I2C pins are unconfigured (setup() disables it for the same reason;
@@ -857,10 +587,7 @@ public:
     if (i2c_sda < 0 || i2c_scl < 0) enabled = false;
 
     if (initDone) {
-      // re-probe in case wiring/addresses changed and reset smoothing state
-      initSensors();
-      briSmoothed = NAN;
-      autoOffActive = darkOverride = false; // re-evaluate dark-off against the new settings
+      initSensors();         // re-probe in case wiring/addresses changed
       discoveryDirty = true; // re-publish/clear HA discovery with the new settings
     }
     return configComplete;
@@ -869,20 +596,7 @@ public:
 #ifndef WLED_DISABLE_MQTT
   void onMqttConnect(bool sessionPresent) {
     if (!enabled) return;
-    char buf[128];
-    snprintf_P(buf, sizeof(buf), PSTR("%s/autobri/set"), mqttDeviceTopic);
-    mqtt->subscribe(buf, 0);
     discoveryDirty = true; // serviced from loop() while connected
-    autoBriPubDirty = true;
-  }
-
-  // handles <deviceTopic>/autobri/set (WLED strips the device-topic prefix)
-  bool onMqttMessage(char* topic, char* payload) {
-    if (strcmp_P(topic, PSTR("/autobri/set")) != 0) return false;
-    if      (!strcasecmp(payload, "ON")  || !strcmp(payload, "1")) autoBriEnabled = true;
-    else if (!strcasecmp(payload, "OFF") || !strcmp(payload, "0")) autoBriEnabled = false;
-    autoBriPubDirty = true; // echo state back (unknown payloads re-assert the truth)
-    return true;
   }
 #endif
 
@@ -900,8 +614,6 @@ const char UsermodSensorsI2C::_name[]       PROGMEM = "Sensors I2C";
 const char UsermodSensorsI2C::_enabled[]    PROGMEM = "Enabled";
 const char UsermodSensorsI2C::_grpSensors[] PROGMEM = "Sensors";
 const char UsermodSensorsI2C::_grpReadings[] PROGMEM = "Readings";
-const char UsermodSensorsI2C::_grpAutoBri[] PROGMEM = "Auto Brightness";
-const char UsermodSensorsI2C::_grpDarkOff[] PROGMEM = "Off When Dark";
 const char UsermodSensorsI2C::_grpMqtt[]    PROGMEM = "MQTT & Home Assistant";
 const char UsermodSensorsI2C::_stateKey[]   PROGMEM = "SensorsI2C";
 

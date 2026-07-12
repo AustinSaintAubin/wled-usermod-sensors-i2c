@@ -1,4 +1,37 @@
-# Bench Test Checklist — v1.0.16
+# Bench Test Checklist — v2.0.0
+
+**v2.0.0 removes auto-brightness** — it moved to
+[wled-usermod-auto-brightness](https://github.com/AustinSaintAubin/wled-usermod-auto-brightness)
+(bench-test it with that repo's own TESTING.md). §0 below covers the removal;
+§2/§3 are retired (that behavior now lives in the new usermod, where it was
+lifted verbatim from v1.0.16). Everything else is a regression check.
+After a clean pass: `git tag v2.0.0 && git push origin v2.0.0`.
+
+> ⚠️ **Re-flash note (v2.0.0):** the *Auto Brightness* and *Off When Dark* settings
+> are gone from this usermod (the orphaned cfg.json sub-objects are inert and vanish
+> on the next settings save). Re-enter those settings once in the new usermod.
+> Presets/automations: `{"SensorsI2C":{"autoBri":…}}` → `{"AutoBri":{"on":…}}`;
+> the MQTT `<deviceTopic>/autobri` topics are served by the new usermod now.
+
+## 0. v2.0.0 strip-down — ⏳ not tested yet
+
+- [ ] Settings page: Sensors / Readings / MQTT & Home Assistant sub-sections only —
+      no Auto Brightness or Off When Dark group, no Reset Offset button; Live
+      Readings + ↻ Refresh and the Readings Measured|Derived table still render
+- [ ] Lux still reads (info page `Sensor Illuminance`) and publishes to
+      `<deviceTopic>/illuminance`
+- [ ] `{"SensorsI2C":{"read":true}}` still triggers a fresh reading; `autoBri` /
+      `resetOffset` keys are ignored without errors
+- [ ] No `<deviceTopic>/autobri*` traffic from this usermod
+- [ ] With HA discovery on: the legacy retained switch config
+      (`homeassistant/switch/<clientID>/Auto Brightness/config`) is cleared on
+      connect (check with `mosquitto_sub -t 'homeassistant/switch/#' -v`)
+- [ ] **Coexistence:** with wled-usermod-auto-brightness also installed and sharing
+      the BH1750, both report plausible lux and there are no I2C errors
+
+---
+
+# Archived checklist — v1.0.16
 
 Hardware validation for everything changed since v1.0.5. Bench passes ran
 2026-07-09/10; §1–§3 are fully green (v1.0.15/16 add new §1 re-test items).
