@@ -1,6 +1,6 @@
 {
   "name": "wled-usermod-sensors-i2c",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "license": "MIT",
   "description": "Combined I2C environmental sensor usermod for the common 3-in-1 breakout (HTU21D temp/humidity, BMP180 pressure, BH1750FVI lux) with optional MQTT / Home Assistant publishing. For ambient-light brightness control see the companion wled-usermod-auto-brightness.",
   "repository": { "type": "git", "url": "https://github.com/AustinSaintAubin/wled-usermod-sensors-i2c.git" },

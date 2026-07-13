@@ -26,7 +26,7 @@
 #define USERMOD_ID_SENSORS_I2C 900
 #endif
 
-#define SENSORS_I2C_VERSION "2.0.0"  // keep in sync with library.json (CI-checked)
+#define SENSORS_I2C_VERSION "2.0.1"  // keep in sync with library.json (CI-checked)
 
 #define SENSORS_I2C_PROBE_INTERVAL_MS 30000UL   // re-probe cadence for missing sensors
 #define SENSORS_I2C_MQTT_HEARTBEAT_MS 300000UL  // forced full republish (keeps HA alive)
@@ -451,6 +451,14 @@ public:
   }
 
   void appendConfigData() {
+    // Version badge in the usermod's <h3> heading (SENSORS_I2C_VERSION via literal
+    // concat, so it can never drift). Anchor: first field -> div.sec -> its h3.
+    oappend(F("(function(){var a=d.getElementsByName('Sensors I2C:Enabled');if(!a.length)return;"
+              "var s=a[a.length-1];while(s&&!(s.tagName=='DIV'&&s.className=='sec'))s=s.parentNode;"
+              "var h=s?s.querySelector('h3'):null;if(!h)return;"
+              "var v=document.createElement('span');v.textContent='v" SENSORS_I2C_VERSION "';"
+              "v.style.cssText='font-size:12px;font-weight:400;opacity:.6;margin-left:8px';"
+              "h.appendChild(v);})();"));
     // Temperature unit dropdown
     oappend(F("dd=addDropdown('Sensors I2C:Sensors','Temperature Unit');"));
     oappend(F("addOption(dd,'Celsius (°C)','0');"));
